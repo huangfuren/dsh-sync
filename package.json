@@ -1,0 +1,55 @@
+{
+  "name": "dsh-sync",
+  "version": "0.2.1",
+  "description": "把本机 dsh 配置同步到另一台机器:导出可移植 bundle(settings / 凭据(可选) / 插件源码 / profile 清单)并生成自安装 apply.ps1。接收方无需装 dsh-sync,跑一次脚本即可继续用 dsh。",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "author": "huangfuren",
+  "scripts": {
+    "check": "node --check index.js && node --check lib/constants.js && node --check lib/bundle.js && node --check lib/checksum.js && node --check lib/crypto.js && node --check lib/apply-script.js && node --check lib/target/dsync-helper.mjs && node --check lib/tools/export.js",
+    "test": "node --test test/bundle.test.js",
+    "verify": "npm run check && npm test",
+    "prepack": "npm run verify"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": ">=3.18.1 <4.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <1.0.0",
+    "@deepseek-ai/cordis": ">=4.0.1 <5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6"
+  },
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.1.1-rc.2 <1.0.0"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "sync",
+    "migration",
+    "profile"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  }
+}

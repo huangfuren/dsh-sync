@@ -1,0 +1,3 @@
+- insert:
+    - id: sync
+      name: dsh-sync
