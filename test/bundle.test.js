@@ -8,6 +8,7 @@ import path from 'node:path'
 import {
   classifyDep, isBuiltinBundle, scanSettingsSecrets, maskSecret, copyTreeFiltered,
   readProfileManifest, exportBundle, isSecretLine, redactSettingsSecrets, listProfiles,
+  scanAbsolutePaths,
 } from '../lib/bundle.js'
 import { buildApplyPs1, buildApplySh, buildApplyBat } from '../lib/apply-script.js'
 import { buildChecksums, verifyChecksums } from '../lib/checksum.js'
@@ -234,10 +235,10 @@ test('exportBundle with passphrase encrypts secrets instead of stripping them', 
     const settings = decryptBuffer(fs.readFileSync(path.join(bundleDir, 'settings.enc')), PASSPHRASE).toString('utf8')
     assert.ok(settings.includes('sk-literal-secret-123'))
     assert.throws(() => decryptBuffer(fs.readFileSync(path.join(bundleDir, 'settings.enc')), 'wrong-pass'))
-    // apply 脚本必须走解密路径而不是直接拷贝
+    // apply 脚本:settings 走 prepare-settings(解密+路径重映射),credentials 走 decrypt
     const ps1 = fs.readFileSync(path.join(bundleDir, 'apply.ps1'), 'utf8')
-    assert.ok(ps1.includes('decrypt --kind settings'))
-    assert.ok(ps1.includes('decrypt --kind credentials'))
+    assert.ok(ps1.includes('prepare-settings'), 'ps1 must use prepare-settings for settings (decrypt + path remap)')
+    assert.ok(ps1.includes('decrypt --kind credentials'), 'ps1 must use decrypt for credentials')
   } finally {
     fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true })
   }
@@ -382,4 +383,105 @@ test('redactSettingsSecrets drops literal secret lines, keeps the rest', () => {
   assert.deepEqual(removed, ['apiToken'])
   assert.ok(!text.includes('ol_secret_value_123'), 'literal secret must be gone')
   assert.ok(text.includes('preference: dark'), 'non-secret line must survive')
+})
+
+// ── 0.3.0 新功能测试 ─────────────────────────────────────────────────────────
+
+test('isSecretLine detects GitHub PAT by value pattern (ghp_)', () => {
+  // 字段名不含 key/token,但值是 GitHub PAT 格式
+  assert.equal(isSecretLine('pat', 'ghp_1234567890abcdefghij'), true)
+})
+
+test('isSecretLine detects OpenAI key by value pattern (sk-)', () => {
+  assert.equal(isSecretLine('model', 'sk-proj1234567890abcdef'), true)
+})
+
+test('isSecretLine detects AWS access key by value pattern (AKIA)', () => {
+  assert.equal(isSecretLine('cloud', 'AKIAIOSFODNN7EXAMPLE'), true)
+})
+
+test('isSecretLine detects PEM private key by value pattern', () => {
+  assert.equal(isSecretLine('cert', '-----BEGIN RSA PRIVATE KEY-----'), true)
+})
+
+test('isSecretLine detects JWT by value pattern', () => {
+  assert.equal(isSecretLine('jwt', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123'), true)
+})
+
+test('isSecretLine does not false-positive on short non-secret values', () => {
+  assert.equal(isSecretLine('theme', 'dark'), false)
+  assert.equal(isSecretLine('port', '3000'), false)
+})
+
+test('scanAbsolutePaths finds Windows drive paths', () => {
+  const text = 'plugin:\n  path: D:\\deepseek\\dsh-plugin\\mine\\dsh-foo\n  other: C:/Users/bob/.dsh\n'
+  const paths = scanAbsolutePaths(text)
+  assert.ok(paths.length >= 2)
+  assert.ok(paths.some((p) => p.includes('deepseek')))
+  assert.ok(paths.some((p) => p.includes('Users')))
+})
+
+test('scanAbsolutePaths finds POSIX absolute paths', () => {
+  const text = 'plugin:\n  path: /home/alice/.dsh/plugins/dsh-foo\n  data: /tmp/dsh-data\n'
+  const paths = scanAbsolutePaths(text)
+  assert.ok(paths.length >= 2)
+  assert.ok(paths.some((p) => p.startsWith('/home/')))
+  assert.ok(paths.some((p) => p.startsWith('/tmp/')))
+})
+
+test('scanAbsolutePaths returns empty for text without absolute paths', () => {
+  assert.deepEqual(scanAbsolutePaths('theme: dark\nport: 3000\n'), [])
+})
+
+test('exportBundle records pathHints in manifest', async () => {
+  const home = fixture()
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-out-'))
+  try {
+    // 在 settings.yaml 中加入绝对路径
+    fs.writeFileSync(path.join(home, 'settings.yaml'),
+      'ui-theme:\n  preference: dark\nfoo:\n  apiKeyEnv: sk-literal-secret-123\n' +
+      'plugin:\n  source: ' + path.join(home, 'plugsrc', 'dsh-foo').replace(/\\/g, '/') + '\n')
+    const { manifest } = await exportBundle({
+      dshHome: home, profiles: ['web'], outDir: out, writeScripts,
+    })
+    assert.ok(manifest.pathHints, 'manifest must have pathHints')
+    assert.ok(manifest.pathHints.length > 0, 'pathHints should contain the absolute path from settings')
+    assert.ok(manifest.pathHints.some((h) => h.source === 'settings.yaml'))
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true })
+  }
+})
+
+test('apply scripts include stale lock recovery', async () => {
+  const home = fixture()
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-out-'))
+  try {
+    const { bundleDir } = await exportBundle({
+      dshHome: home, profiles: ['web'], outDir: out, passphrase: PASSPHRASE, writeScripts,
+    })
+    const ps1 = fs.readFileSync(path.join(bundleDir, 'apply.ps1'), 'utf8')
+    assert.ok(ps1.includes('.lock'), 'ps1 must check for stale lock file')
+    assert.ok(ps1.includes('Remove-Item $lockFile'), 'ps1 must remove stale lock')
+    const sh = fs.readFileSync(path.join(bundleDir, 'apply.sh'), 'utf8')
+    assert.ok(sh.includes('.lock'), 'sh must check for stale lock file')
+    assert.ok(sh.includes('rm -f'), 'sh must remove stale lock')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true })
+  }
+})
+
+test('apply scripts use prepare-settings for settings (path remap support)', async () => {
+  const home = fixture()
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-out-'))
+  try {
+    const { bundleDir } = await exportBundle({
+      dshHome: home, profiles: ['web'], outDir: out, passphrase: PASSPHRASE, writeScripts,
+    })
+    const ps1 = fs.readFileSync(path.join(bundleDir, 'apply.ps1'), 'utf8')
+    assert.ok(ps1.includes('prepare-settings'), 'ps1 must use prepare-settings for settings')
+    const sh = fs.readFileSync(path.join(bundleDir, 'apply.sh'), 'utf8')
+    assert.ok(sh.includes('prepare-settings'), 'sh must use prepare-settings for settings')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true })
+  }
 })

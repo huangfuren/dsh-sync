@@ -24,6 +24,22 @@ same absolute paths), plus a generated \`apply.ps1\` and \`APPLY.md\`. It delibe
 artifacts: \`node_modules\`, \`sessions\`, \`storages\`, \`background\`, \`.anonymous-user-id\`, pnpm lockfile — the
 target rebuilds those from the declaration via \`dsh plugin add\` + pnpm install.
 
+**Preview mode**: pass \`preview=true\` to scan and report what would be exported WITHOUT writing any files.
+Shows profiles, plugin count, estimated size, path hints, and what will be excluded. Useful to verify
+nothing is missed before committing to the export.
+
+**Path auto-mapping**: the export records absolute paths found in settings.yaml and cordis.patch.yml.
+On the target machine, the apply script's \`prepare-settings\` step detects which paths don't exist and
+interactively prompts the user to remap them (e.g. \`D:\\deepseek → C:\\code\`). This handles the common
+case of different usernames or drive letters between machines.
+
+**Enhanced credential screening**: values matching known secret formats (GitHub PAT \`ghp_\`, OpenAI \`sk-\`,
+AWS \`AKIA\`, Google \`AIza\`, Slack \`xox\`, JWT, PEM private keys) are flagged even when the field name
+doesn't contain "key" or "token".
+
+**Stale lock recovery**: if the target machine has a leftover \`.lock\` file (from a force-killed dsh),
+the apply script removes it before proceeding.
+
 Integrity & safety: every file is sha256-recorded in checksums.json and verified before applying; the
 apply script supports a dry run, backs up whatever it is about to overwrite, and rolls back automatically
 if any step fails.

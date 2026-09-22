@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 (2026-09-22)
+
+对标社区同类插件,补齐换机场景的四个短板(功能从零实现,不含任何第三方代码):
+
+- **路径自动映射**:导出时扫描 `settings.yaml` 和 `cordis.patch.yml` 中的绝对路径(Windows 盘符路径
+  + POSIX 路径),记录到 manifest 的 `pathHints` 字段。apply 时新增 `prepare-settings` 命令,检测哪些
+  路径在目标机上不存在,交互式提示用户做前缀映射(如 `D:\deepseek → C:\code`),映射后写入 settings。
+  解决换机后用户名/盘符/OS 不同导致路径全废的头号痛点。
+- **增强凭据筛查**:除字段名匹配外,新增值模式筛查——`ghp_`(GitHub PAT)、`sk-`(OpenAI/DeepSeek)、
+  `AKIA`(AWS)、`AIza`(Google)、`xox`(Slack)、JWT、`-----BEGIN PRIVATE KEY-----`(PEM 私钥)。
+  即使字段名不含 key/token 等关键词,值匹配已知密钥格式也判为明文密钥。
+- **导出预览**:新增 `preview=true` 参数,扫描并报告将要导出什么(profile 清单、插件数、估算体积、
+  路径提示、排除项),不写任何文件。确认无误后去掉 preview 参数执行导出。
+- **残留锁恢复**:apply 脚本在目标机上检测 `.lock` 文件(dsh 被强杀后残留),自动清除,避免新机启动卡住。
+
 ## 0.2.1 (2026-09-20)
 
 针对"换机不能搞坏任何一台机器"的三道防线:

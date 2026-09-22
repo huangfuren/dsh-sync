@@ -1,6 +1,6 @@
 {
   "name": "dsh-sync",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "把本机 dsh 配置同步到另一台机器:导出可移植 bundle(settings / 凭据(可选) / 插件源码 / profile 清单)并生成自安装 apply.ps1。接收方无需装 dsh-sync,跑一次脚本即可继续用 dsh。",
   "type": "module",
   "main": "index.js",
