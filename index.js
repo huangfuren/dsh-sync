@@ -96,13 +96,16 @@ function defaultOutDir() {
   return path.join(os.tmpdir(), 'dsh-sync-bundle')
 }
 
+// dsh 0.2.0：宿主从 Config schema 自动生成设置卡片，只有标 .volatile() 的字段会进表单。
+// ⚠️ volatile 字段递交到插件时是 Volatile<T> 包装，必须 .get() 取值（见下方 readValue）。
+// dshProfileDir 类「用户几乎不改」的路径字段不进表单，故不标 volatile。
 export const Config = Schema.object({
-  dshHome: Schema.string().default('').description('Source $DSH_HOME. Empty = $DSH_HOME env or ~/.dsh.'),
-  profile: Schema.string().default('web').description('Default profile name to export.'),
-  outDir: Schema.string().default('').description('Default bundle output directory. Empty = temp/dsh-sync-bundle.'),
-  includeCredentials: Schema.boolean().default(false).description('Include .credentials.yaml (real secrets). Off by default.'),
-  includePlugins: Schema.boolean().default(true).description('Vendor link: plugin sources into the bundle.'),
-  credentialPassphrase: Schema.string().default('').description('>= 6 chars: encrypt settings + credentials instead of shipping them in the clear.'),
+  dshHome: Schema.string().default('').volatile().description('Source $DSH_HOME. Empty = $DSH_HOME env or ~/.dsh.'),
+  profile: Schema.string().default('web').volatile().description('Default profile name to export.'),
+  outDir: Schema.string().default('').volatile().description('Default bundle output directory. Empty = temp/dsh-sync-bundle.'),
+  includeCredentials: Schema.boolean().default(false).volatile().description('Include .credentials.yaml (real secrets). Off by default.'),
+  includePlugins: Schema.boolean().default(true).volatile().description('Vendor link: plugin sources into the bundle.'),
+  credentialPassphrase: Schema.string().default('').volatile().description('>= 6 chars: encrypt settings + credentials instead of shipping them in the clear.'),
 })
 
 export function apply(ctx, config = {}) {
@@ -119,29 +122,28 @@ export function apply(ctx, config = {}) {
     credentialPassphrase: '',
     ...config,
   }
-  let activeConfig = () => entryConfig
+  // dsh 0.2.0：ctx.settings 是 SettingsForms，只有 configure/describe/update/...，
+  // 旧的 settings.register(ns, schema, opts) 已删除 —— 由宿主读 Config schema
+  // 自动生成设置卡片，用户层由宿主合并进 apply 的 config 本身。
   try {
     ctx.inject(['settings'], (sctx) => {
       try {
-        const scope = sctx.settings.register(SETTINGS_NAMESPACE, Config, { base: entryConfig })
-        activeConfig = () => scope.get()
-        sctx.effect(() => () => {
-          activeConfig = () => entryConfig
-        })
+        if (typeof sctx.settings?.configure === 'function') {
+          sctx.effect(() => sctx.settings.configure({ auto: true }), 'dsh-sync: settings page policy')
+        }
       } catch (err) {
-        report(ctx, 'settings section unavailable; falling back to the entry config', err)
+        report(ctx, 'settings policy registration failed; host default applies', err)
       }
     })
   } catch (err) {
-    report(ctx, 'settings injection unavailable; falling back to the entry config', err)
+    report(ctx, 'settings injection unavailable; entry config in use', err)
   }
+  // volatile 字段在 0.2.0 是 Volatile<T> 包装；旧宿主给的是裸值。双形态取值。
+  const readValue = (v) => (v !== null && typeof v === 'object' && typeof v.get === 'function' ? v.get() : v)
   const getConfig = () => {
-    try {
-      return activeConfig()
-    } catch (err) {
-      report(ctx, 'config resolution failed; using entry config', err)
-      return entryConfig
-    }
+    const out = {}
+    for (const k of Object.keys(entryConfig)) out[k] = readValue(entryConfig[k])
+    return out
   }
 
   try {
