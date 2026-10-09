@@ -33,7 +33,7 @@
     "@deepseek-ai/cordis": ">=4.0.1 <5"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.6"
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.8"
   },
   "engines": {
     "node": ">=22.19",
