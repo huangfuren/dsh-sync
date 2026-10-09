@@ -167,6 +167,15 @@ test('exportBundle vendors link sources, excludes junk, writes both apply script
     assert.ok(ps1.includes('[System.Text.Encoding]::UTF8'), 'ps1 must read manifest.json as explicit UTF-8')
     assert.ok(ps1.includes('pnpm-workspace.yaml'), 'profile declaration files must land before plugin add')
     assert.ok(!ps1.includes('$Profile '), 'must not shadow the automatic $Profile variable')
+    // 回归:dsh 用 $DSH_HOME 定位 profile,插件装到哪由它决定,而不是 settings 写到哪。
+    // 不显式指向 -TargetHome 时,恢复到非默认目录会分裂:settings 在目标目录、插件在 ~/.dsh。
+    assert.ok(ps1.includes('$env:DSH_HOME = $TargetHome'), 'ps1 must point DSH_HOME at the target home before plugin add')
+    // 回归(PS 5.1):dsh 和 node helper 都会往 stderr 写进度/口令提示,而 $ErrorActionPreference="Stop"
+    // 会把原生命令的 stderr 当成终止错误 —— 插件其实装好了却触发回滚。所有原生命令必须走安全包装,
+    // 不能再直接用 $LASTEXITCODE 判定(那时错误已经抛出,根本走不到这行)。
+    assert.ok(ps1.includes('function Invoke-Native'), 'ps1 must wrap native calls to survive PS 5.1 stderr-as-error')
+    assert.ok(ps1.includes('$script:NativeExit'), 'ps1 must branch on the wrapper captured exit code')
+    assert.ok(!ps1.includes('if ($LASTEXITCODE'), 'ps1 must not branch on raw $LASTEXITCODE (PS 5.1 throws first)')
     // 傻瓜入口向导:体检、验货、预演、收口令,四步都到位才开始改目标机。
     const bat = fs.readFileSync(path.join(bundleDir, '一键恢复.bat'), 'utf8')
     assert.ok(bat.includes('chcp 65001'), 'bat must switch to UTF-8 or Chinese turns to mojibake')
@@ -181,6 +190,8 @@ test('exportBundle vendors link sources, excludes junk, writes both apply script
     assert.ok(sh.includes('restore_all'))
     assert.ok(sh.includes('command -v dsh'), 'apply.sh must preflight dsh too')
     assert.ok(sh.includes('--profile web add'))
+    // 同 ps1:DOS/POSIX 两侧都要把 DSH_HOME 指给目标目录,否则插件装错 home。
+    assert.ok(sh.includes('export DSH_HOME="$TARGET_HOME"'), 'apply.sh must export DSH_HOME for plugin add')
 
     // 校验和必须覆盖实际产物,且能通过 verify
     const sums = JSON.parse(fs.readFileSync(path.join(bundleDir, 'checksums.json'), 'utf8'))

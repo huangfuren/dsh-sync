@@ -1,0 +1,44 @@
+# CI 工作流：每次向 main 分支推送或发起针对 main 的 PR 时，
+# 在多个 Node.js 版本 × 操作系统上执行语法检查与单元测试。
+name: CI
+
+# 触发条件：
+# - push 到 main 分支
+# - 针对 main 分支的 pull_request
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 最小权限原则：仅授予读取仓库内容的权限，避免工作流获得写权限令牌。
+permissions:
+  contents: read
+
+jobs:
+  # 校验任务：在矩阵中列出的每个 Node.js 版本 × 操作系统上运行同一套校验。
+  # 覆盖 Windows / macOS / Linux —— 本插件会生成 apply.ps1 与 apply.sh
+  # 两套安装脚本，路径分隔符与换行都必须在这三类平台上成立。
+  verify:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 即使某个组合失败也不中断其它组合，便于一次看全矩阵结果。
+      fail-fast: false
+      matrix:
+        # Node 版本覆盖 engines 声明的兼容基线。
+        node: [22, 24]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      # 拉取源码。
+      - uses: actions/checkout@v4
+      # 安装指定版本的 Node。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 刻意不做 install：本插件是纯 Node ESM，verify 的两步都不触达运行时依赖。
+      # - check 是 node --check（只解析语法，不解析 import）
+      # - test 是 node --test test/bundle.test.js（测试只 import lib/，而 schemastery
+      #   仅被 host 入口 index.js 使用）
+      # 这样 CI 不依赖 lockfile（本仓库未提交 lockfile）也不会被供应链环节拖慢。
+      - run: npm run verify

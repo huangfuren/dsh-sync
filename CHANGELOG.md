@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.1 (2026-10-06)
+
+修三个会影响换机结果的缺陷(全部由真实端到端执行发现,不是读代码推断):
+
+- **修复(重要):apply 未把 `DSH_HOME` 指给目标目录 → 配置分裂。** dsh 通过 `$DSH_HOME` 定位
+  profile(`$DSH_HOME/profiles/<name>`),而 apply 生成的脚本此前只在解析默认值时读过它一次,
+  **从未导给 `dsh plugin add`**。后果:向导里改过"恢复到哪个目录"(或用 `-TargetHome` / `--home`)
+  时,`settings.yaml` 落到目标目录,插件却被装进 `~/.dsh` —— 目标机拿到半份配置。
+  现在 `apply.ps1` 在装插件前 `$env:DSH_HOME = $TargetHome`、`apply.sh` 在 `--skip-plugins` 分支外
+  `export DSH_HOME="$TARGET_HOME"`,两侧行为一致。
+  *实测证明*:令 `--home` 指向 T、`DSH_HOME` 指向无关目录 D,dsh 输出
+  `initialized profile web at <T>/profiles/web`,且 D 全程未被创建。
+- **修复(重要,仅 Windows):PS 5.1 把 dsh 的 stderr 当致命错误 → 装完插件却回滚。** `dsh` 把进度写到
+  **stderr**(`dsh: initialized profile ...`),而 `apply.ps1` 的 `$ErrorActionPreference = "Stop"`
+  会让 Windows PowerShell 5.1 把原生命令的 stderr 视为**终止错误**。于是 `dsh plugin add` 明明成功
+  (profile 已初始化、依赖已写入、bundles 已注册),脚本却抛 `NativeCommandError` 进入回滚分支并以 1 退出。
+  node helper 提示口令时同样写 stderr,受影响面一致。
+  现在所有原生命令统一走新增的 `Invoke-Native` 包装:执行期间把 `$ErrorActionPreference` 降为
+  `Continue`,只以 `$LASTEXITCODE` 论成败。判定点从 `$LASTEXITCODE` 改为 `$script:NativeExit`。
+  *此前未暴露的原因*:那一轮 Windows 验证用的是 `-SkipPlugins`,插件安装路径没被真正执行到。
+- **修复:`export-cli.mjs` 收尾自检在部分环境以 `EBUSY` 异常退出。** 它原本 spawn 一个 node 子进程
+  跑 `dsync-helper.mjs verify`,在便携版 / 可执行文件被安全软件或自身占用时会拿到
+  `EBUSY: resource busy or locked`,且异常未捕获 —— bundle 明明导出成功却抛栈退出。
+  改为**在本进程内**用同一份 `checksums.json` 完成校验(`lib/checksum.js` 的 `verifyChecksums`),
+  不再 spawn;并加 try/catch 兜底,自检环节永不把一次成功的导出变成异常。
+- 把 `scripts/export-cli.mjs` 纳入 `npm run check` 的语法检查范围。
+- 新增回归断言:ps1 / sh 必须把 `DSH_HOME` 指向目标目录;ps1 必须包含 `Invoke-Native` 包装、
+  以 `$script:NativeExit` 判定,且**不得**再出现裸 `if ($LASTEXITCODE`(PS 5.1 会在读到它之前就抛错)。
+
 ## 0.3.0 (2026-09-22)
 
 对标社区同类插件,补齐换机场景的四个短板(功能从零实现,不含任何第三方代码):

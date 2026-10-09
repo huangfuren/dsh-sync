@@ -1,0 +1,7 @@
+# 依赖更新：每周检查一次 npm 依赖（含 devDependencies），有更新就开 PR，由 CI 决定能否合入。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly

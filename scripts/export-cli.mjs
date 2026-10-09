@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const { exportBundle, listProfiles } = await import(pathToFileURL(path.join(HERE, 'lib', 'bundle.js')).href)
 const { buildApplyPs1, buildApplySh, buildApplyBat } = await import(pathToFileURL(path.join(HERE, 'lib', 'apply-script.js')).href)
-const { execFileSync } = await import('node:child_process')
+const { verifyChecksums } = await import(pathToFileURL(path.join(HERE, 'lib', 'checksum.js')).href)
 
 function writeScripts(dir, m) {
   fs.writeFileSync(path.join(dir, 'apply.ps1'), buildApplyPs1(m), 'utf8')
@@ -134,5 +134,17 @@ console.log('  1. 把整个文件夹拷到新电脑(U盘 / 网盘 / 局域网都
 console.log('  2. 新电脑上先确认 node / pnpm / dsh 三个命令都能用')
 console.log('  3. 双击文件夹里的「一键恢复.bat」')
 console.log('')
-console.log(execFileSync(process.execPath, [path.join(bundleDir, 'tools', 'dsync-helper.mjs'), 'verify'], { encoding: 'utf8' }).trim())
+// 自检在本进程内完成,不再 spawn 一个 node 子进程:在部分环境(便携版 / 被安全软件锁住可执行文件)
+// spawn 同一个 node 二进制会报 EBUSY,而一次已经成功的导出不该因为这个以异常收场。
+// 校验逻辑与 bundle 内的 tools/dsync-helper.mjs verify 一致(同一份 checksums.json)。
+try {
+  const sums = JSON.parse(fs.readFileSync(path.join(bundleDir, 'checksums.json'), 'utf8'))
+  const v = await verifyChecksums(bundleDir, sums.entries)
+  console.log(v.ok
+    ? `integrity OK (${v.checked} file(s))`
+    : `integrity FAILED (missing ${v.missing.length}, mismatched ${v.mismatched.length}) — 请重新导出`)
+} catch (err) {
+  console.log('(完整性自检未完成,可手动复核:', err && err.message ? err.message : String(err), ')')
+  console.log(` node "${path.join(bundleDir, 'tools', 'dsync-helper.mjs')}" verify`)
+}
 console.log('')
