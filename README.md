@@ -1,5 +1,7 @@
 # dsh-sync
 
+中文 | [English](README.en.md)
+
 把**本机 dsh 配置**搬到另一台机器 ——换机不停工。
 接收方**不需要先装 dsh-sync**:bundle 自带自安装脚本和一个零依赖小工具,跑一次即可继续用 dsh。
 
