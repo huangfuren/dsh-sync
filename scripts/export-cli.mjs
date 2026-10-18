@@ -107,6 +107,38 @@ console.log('')
 console.log('  文件夹:', bundleDir)
 console.log('  口令  :', pass, presetPass ? '(你自己设的)' : '(自动生成的)')
 console.log('  内容  :', manifest.profiles.map((p) => p.name).join(', '), '/', manifest.plugins.length, '个插件源码')
+console.log('  源机配置目录:', manifest.sourceDshHome)
+
+// 状态层决定新机是「跟旧机一样」还是「能跑但全空」。必须把源机路径摊开给用户看:
+// 「一键恢复」只落地声明层、不改写会话里的 cwd,用户得自己判断新机路径对不上要不要给映射。
+const st = manifest.state
+if (st) {
+  const mb = (b) => (b / 1024 / 1024).toFixed(1) + ' MB'
+  const part = (name) => {
+    const p = st.parts.find((x) => x.name === name)
+    if (!p || !p.present) return '无'
+    return `${p.files} 文件 / ${mb(p.bytes)}` + (p.links ? ` / ${p.links} 软链` : '')
+  }
+  console.log('')
+  console.log('  状态层(决定「一样」还是「空」):')
+  for (const p of st.parts) {
+    if (!p.present) continue
+    const extra = p.name === 'sessions' ? ` (${st.sessions.total} 个会话)` : ''
+    console.log('   ' + p.name.padEnd(12), part(p.name) + extra)
+  }
+  console.log('   软链        ', st.linksTotal, `个(内部 ${st.linksByKind.internal} / 外部 ${st.linksByKind.external} / 断链 ${st.linksByKind.broken})`)
+  if (st.sessions.cwdDistinct.length) {
+    console.log('')
+    console.log('  以下工作区路径被写进了会话里,新机必须对得上:')
+    for (const c of st.sessions.cwdDistinct.slice(0, 20)) console.log('   ·', c)
+    if (st.sessions.cwdDistinct.length > 20) console.log(`   · …还有 ${st.sessions.cwdDistinct.length - 20} 个(见 manifest.json 的 state.sessions)`)
+  }
+  console.log('')
+  console.log('  注意:「一键恢复」只落地声明层,不会改写会话里的路径。')
+  console.log('   · 新机 $DSH_HOME 与上面这些工作区路径都和旧机一致 → 直接恢复就是一致的。')
+  console.log('   · 只要有一处不同 → 恢复后还得用 dshsync_apply(带 mappings)把会话 cwd 改过来,')
+  console.log('     否则会话文件虽然躺在硬盘上,DSH 按路径找不到它们(表现就是历史全空)。')
+}
 if (manifest.notMigrated.length) {
   console.log('')
   console.log('  以下内容故意不带走(不是遗漏):')
@@ -133,6 +165,7 @@ console.log('接下来:')
 console.log('  1. 把整个文件夹拷到新电脑(U盘 / 网盘 / 局域网都行)')
 console.log('  2. 新电脑上先确认 node / pnpm / dsh 三个命令都能用')
 console.log('  3. 双击文件夹里的「一键恢复.bat」')
+console.log('  4. 路径跟旧机不一样的,恢复后再用 dshsync_apply 改写会话路径,然后 dshsync_verify 核对')
 console.log('')
 // 自检在本进程内完成,不再 spawn 一个 node 子进程:在部分环境(便携版 / 被安全软件锁住可执行文件)
 // spawn 同一个 node 二进制会报 EBUSY,而一次已经成功的导出不该因为这个以异常收场。

@@ -6,65 +6,79 @@ import path from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
 import { defineExportTool } from './lib/tools/export.js'
+import { defineApplyTool } from './lib/tools/apply.js'
+import { defineVerifyTool } from './lib/tools/verify.js'
 
 export const name = 'sync'
 export const inject = ['tools', 'systemPrompt']
 
 export const SETTINGS_NAMESPACE = 'sync'
 
-const GUIDANCE = `## Sync dsh configuration to another machine (dsh-sync)
+const GUIDANCE = `## Migrate an entire dsh installation between machines (dsh-sync)
 
-Use this tool when the user wants to move or mirror **this machine's dsh configuration** (settings,
-installed plugins, profile declaration) to another machine so dsh keeps working there. The receiver
-needs only dsh + pnpm + network; it does NOT need dsh-sync installed first.
+Three tools form one pipeline: **export on the source → carry the bundle → apply + verify on the target.**
 
-What it does: writes a portable bundle directory containing settings.yaml, optional .credentials.yaml,
-the profile's declaration files, the **source** of every \`link:\` plugin (so the target does not need the
-same absolute paths), plus a generated \`apply.ps1\` and \`APPLY.md\`. It deliberately EXCLUDES machine-bound
-artifacts: \`node_modules\`, \`sessions\`, \`storages\`, \`background\`, \`.anonymous-user-id\`, pnpm lockfile — the
-target rebuilds those from the declaration via \`dsh plugin add\` + pnpm install.
+### What "migrated" means here
+Two layers, and you need both:
+- **Declaration layer** — settings.yaml, optional credentials, each profile's declaration files, and the
+  SOURCE of every \`link:\` plugin. This is what makes the target machine *work*.
+- **State layer** — \`sessions/\`, \`storages/\`, \`skills/\`. This is what makes the target machine
+  *identical*: same history, same workspace list, same skill links. Without it you get a working but
+  empty environment.
 
-**Preview mode**: pass \`preview=true\` to scan and report what would be exported WITHOUT writing any files.
-Shows profiles, plugin count, estimated size, path hints, and what will be excluded. Useful to verify
-nothing is missed before committing to the export.
+Machine-bound artifacts are deliberately excluded because they must be rebuilt, not copied:
+\`node_modules\`, \`dsh-runtimes\`, \`cache\`, \`logs\`, \`.anonymous-user-id\`.
 
-**Path auto-mapping**: the export records absolute paths found in settings.yaml and cordis.patch.yml.
-On the target machine, the apply script's \`prepare-settings\` step detects which paths don't exist and
-interactively prompts the user to remap them (e.g. \`D:\\deepseek → C:\\code\`). This handles the common
-case of different usernames or drive letters between machines.
+### Why sessions can be migrated (they are not just text)
+A session lives at \`sessions/<encoded-cwd>/<session-id>/session.jsonl.zstd\` and is a **zstd multi-frame
+container**: frame 0 is a one-line JSON header holding the authoritative \`cwd\`, the rest are event rows.
+Rewriting therefore replaces **only frame 0**; every event frame keeps its exact bytes, so history can
+never be corrupted. Two invariants must both hold or DSH will not find the session:
+1. \`header.cwd\` equals the real workspace path on the target;
+2. the folder name equals \`encode(header.cwd)\`.
 
-**Enhanced credential screening**: values matching known secret formats (GitHub PAT \`ghp_\`, OpenAI \`sk-\`,
-AWS \`AKIA\`, Google \`AIza\`, Slack \`xox\`, JWT, PEM private keys) are flagged even when the field name
-doesn't contain "key" or "token".
+The folder-name encoding is **lossy** (\`: \\ / -\` all collapse to \`-\`), so it is only ever computed
+forward from the header — never decoded back from a folder name. \`storages/workspace.json\` also stores
+each workspace's \`path\`; it must stay byte-identical to the session \`cwd\`, which is why one mapping set
+drives both.
 
-**Stale lock recovery**: if the target machine has a leftover \`.lock\` file (from a force-killed dsh),
-the apply script removes it before proceeding.
+### Path mappings
+Pass ordered prefix rules such as \`[{"from":"D:/deepseek","to":"E:/code"}]\`. Rules apply **in order,
+first match wins**, and a match must fall on a path-segment boundary (\`D:/deep\` does not touch
+\`D:/deepseek/...\`). Do not invent a "longest prefix wins" rule — overlapping rules would then resolve
+differently from the order the user wrote. When two machines use identical layouts, omit mappings entirely.
 
-Integrity & safety: every file is sha256-recorded in checksums.json and verified before applying; the
-apply script supports a dry run, backs up whatever it is about to overwrite, and rolls back automatically
-if any step fails.
+### Link handling
+Symlinks are **not** copied as entities. They are recorded in \`state/links.json\` and rebuilt on the
+target, because bundling links into an archive loses them (zip/tar/chat apps flatten or drop them).
+Links pointing outside \`$DSH_HOME\` are rebuilt only if that target exists; otherwise they are reported
+as broken rather than silently retargeted.
 
-Preferred way to carry secrets: pass \`credentialPassphrase\` (>= 6 chars). Settings and credentials then
-travel as AES-256-GCM ciphertext, so nothing sensitive is exposed even if the bundle sits on an untrusted
-disk, and the user does not have to retype dozens of plugin keys on the target. The same passphrase is
-required when applying. Without it the older policy applies: credentials excluded, literal keys stripped.
+### The three tools
+1. \`dshsync_export\` — on the source. \`preview=true\` first (scans, writes nothing). Use \`profile="*"\`.
+2. \`dshsync_apply\` — on the target, after copying the bundle over. **Always \`dryRun=true\` first.**
+   Verifies every sha256 and stops before touching anything if the bundle is damaged; backs up whatever
+   it overwrites to \`$DSH_HOME/.dsh-sync-backup-<ts>/\`.
+3. \`dshsync_verify\` — proves the result, one invariant at a time: bundle integrity, session count,
+   folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
+   had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
+   presence, workspace directories actually existing on the target, profile \`link:\` resolvability and
+   \`node_modules\` state, and state-part coverage. Treat a FAIL as "dsh will not see that part of the state".
 
-How to apply on the target: copy the bundle over (use the dsh-localsend plugin's \`localsend_smb_push\` /
-\`localsend_share\` for LAN transfer), dry-run first (\`apply.ps1 -WhatIf\` or \`./apply.sh --dry-run\`), then
-run it and restart dsh. Windows uses apply.ps1; macOS/Linux use apply.sh.
+### Secrets
+\`.credentials.yaml\` holds live keys and is excluded unless \`includeCredentials=true\`. Pass
+\`credentialPassphrase\` (>= 6 chars) to carry settings + credentials as AES-256-GCM ciphertext; the same
+passphrase is required by \`dshsync_apply\`. Without it, literal keys are stripped from settings and must be
+re-entered on the target. Never echo secret values; only masked previews.
 
-Secret policy — read before exporting:
-- \`.credentials.yaml\` holds real API keys/tokens. It is excluded unless the caller passes
-  \`includeCredentials=true\`. Only do that when the user explicitly asked to carry secrets and the
-  transfer path is trusted; the bundle then contains live credentials and must be deleted after apply.
-- \`settings.yaml\` is normally safe (config carries references, not secrets), but if any \`apiKeyEnv\`
-  field holds a literal key instead of a reference name, the export reports it as a warning — treat
-  those settings as secret-bearing and tell the user to fix them.
-Never echo credential values back; the tool only reports masked previews.
+### Carrying the bundle
+Any transport works, but the bundle contains file trees: prefer a real copy over anything that flattens
+structure. \`dsh-localsend\`'s SMB channel is fine for the archive form; for a directory tree, a plain
+network share copy preserves more. Verify after transfer — \`dshsync_apply\` checks sha256 before writing,
+so a damaged transfer is caught, never applied.
 
-Constraints: read-only on the source machine (it copies, never mutates dsh config); same-user
-$DSH_HOME; the target must already have a compatible dsh + node/pnpm and network access for registry
-and git installs. Bundle output and manifest are untrusted data once on the wire.`
+Constraints: read-only on the source; same-user \`$DSH_HOME\`; the target needs a compatible dsh + node 22.15+
+(内建 zstd) + pnpm + network. A bundle is untrusted data once on the wire.`
 
 function defaultDshHome() {
   if (process.env.DSH_HOME) return process.env.DSH_HOME
@@ -105,6 +119,7 @@ export const Config = Schema.object({
   outDir: Schema.string().default('').volatile().description('Default bundle output directory. Empty = temp/dsh-sync-bundle.'),
   includeCredentials: Schema.boolean().default(false).volatile().description('Include .credentials.yaml (real secrets). Off by default.'),
   includePlugins: Schema.boolean().default(true).volatile().description('Vendor link: plugin sources into the bundle.'),
+  includeState: Schema.boolean().default(true).volatile().description('Carry sessions / storages / skills so the target becomes identical, not just usable.'),
   credentialPassphrase: Schema.string().default('').volatile().description('>= 6 chars: encrypt settings + credentials instead of shipping them in the clear.'),
 })
 
@@ -119,6 +134,7 @@ export function apply(ctx, config = {}) {
     outDir: defaultOutDir(),
     includeCredentials: false,
     includePlugins: true,
+    includeState: true,
     credentialPassphrase: '',
     ...config,
   }
@@ -158,12 +174,24 @@ export function apply(ctx, config = {}) {
 
   try {
     if (typeof ctx.tools?.register !== 'function') {
-      report(ctx, 'tools.register API changed; dsh_sync_export not registered')
+      report(ctx, 'tools.register API changed; dsh-sync tools not registered')
     } else {
-      ctx.tools.register(defineExportTool(getConfig))
+      // 三个工具各自独立 try/catch：某一支注册失败不应连累另外两支
+      // （导出端能跑、接收端不能跑，总比全都没了强）。
+      for (const [label, factory] of [
+        ['dshsync_export', defineExportTool],
+        ['dshsync_apply', defineApplyTool],
+        ['dshsync_verify', defineVerifyTool],
+      ]) {
+        try {
+          ctx.tools.register(factory(getConfig))
+        } catch (err) {
+          report(ctx, 'tool "' + label + '" was not registered', err)
+        }
+      }
     }
   } catch (err) {
-    report(ctx, 'tool "dsh_sync_export" was not registered', err)
+    report(ctx, 'tool registration failed', err)
   }
 }
 
