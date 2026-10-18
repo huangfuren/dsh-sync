@@ -644,6 +644,60 @@ test('目标机 $DSH_HOME 换位置时，内部链接必须重定位（而不是
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+test('$DSH_HOME 本身是符号链接时，内部链接仍判为 internal 并在目标机重定位', { skip: !HAS_ZSTD }, async () => {
+  // 回归用例：导出侧曾用「字面拼写」比较 dshHome 与链接的 realpath，
+  // 导致 macOS（/var → /private/var）、Windows 短名（RUNNER~1）、
+  // 以及用户把 $DSH_HOME 放在软链 / junction 下时，内部链接被误判成 external，
+  // 目标机上就**不会重定位** —— 迁移完成后是一条指向源机路径的死链。
+  const root = tmpDir('symhome')
+  const realHome = path.join(root, 'real-home')
+  const linkedHome = path.join(root, 'linked-home')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+
+  fs.mkdirSync(path.join(realHome, 'skills', 'shared'), { recursive: true })
+  fs.writeFileSync(path.join(realHome, 'skills', 'shared', 'SKILL.md'), '# shared\n')
+
+  try {
+    // $DSH_HOME 这一层是链接，且内部还有一条指向 home 内的链接
+    fs.symlinkSync(realHome, linkedHome, process.platform === 'win32' ? 'junction' : 'dir')
+    fs.symlinkSync(path.join(realHome, 'skills', 'shared'), path.join(realHome, 'skills', 'alias'),
+      process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    // 无符号链接权限的环境（部分 Windows 配置）跳过，不伪装通过
+    fs.rmSync(root, { recursive: true, force: true })
+    return
+  }
+
+  mkSession(linkedHome, 'D:\\deepseek\\proj', 'l1')
+  mkWorkspace(linkedHome, [['w1', 'D:\\deepseek\\proj']])
+  fs.mkdirSync(path.join(linkedHome, 'profiles', 'p1'), { recursive: true })
+  fs.writeFileSync(path.join(linkedHome, 'profiles', 'p1', 'package.json'),
+    JSON.stringify({ name: 'p1', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+  fs.mkdirSync(dst, { recursive: true })
+
+  await exportBundle({ dshHome: linkedHome, profiles: ['p1'], outDir: bundle, includeState: true, onLog: () => {} })
+
+  const doc = JSON.parse(fs.readFileSync(path.join(bundle, 'state', 'links.json'), 'utf8'))
+  const internal = doc.links.find((l) => l.rel === 'alias')
+  assert.ok(internal, '应记录 skills/alias 这条链接')
+  assert.equal(internal.kind, 'internal', '$DSH_HOME 是链接时，home 内的链接仍必须是 internal（不能因拼写差异判成 external）')
+
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'D:/deepseek' }], onLog: () => {},
+  })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  assert.equal(applied.links.relocated, 1, '应报告 1 个链接被重定位')
+
+  const linkAbs = path.join(dst, 'skills', 'alias')
+  const resolved = fs.realpathSync(linkAbs)
+  const dstReal = fs.realpathSync(dst)
+  assert.ok(isSameOrChild(resolved, dstReal), '链接必须落在目标机 $DSH_HOME 内，实际：' + resolved)
+  assert.ok(fs.existsSync(path.join(linkAbs, 'SKILL.md')), '通过链接应能读到真实文件')
+
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 test('inspectBundle 对无效目录返回可读错误', () => {
   const dir = tmpDir('inspect')
   const r = inspectBundle(dir)
@@ -651,4 +705,112 @@ test('inspectBundle 对无效目录返回可读错误', () => {
   assert.equal(r.manifest, undefined)
   assert.ok(r.problems.length > 0)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// ══ 会话日志的多版本形态（真实机器上三种并存）═══════════════════════════════
+
+test('会话日志的三种文件名（无版本 / v3 / v4）都要识别并改写', { skip: !HAS_ZSTD }, async () => {
+  const home = tmpDir('variants')
+  const cwd = 'D:\\deepseek\\dsh-chat'
+  const dir = path.join(home, 'sessions', encodeSessionDir(cwd), 's-multi')
+  // 同一次会话在三个宿主版本下各留一份：header.cwd 一致，仅 version 不同
+  writeSessionFile(path.join(dir, 'session.jsonl.zstd'), { type: 'session', cwd, id: 's-multi' }, ['{"seq":1}'])
+  writeSessionFile(path.join(dir, 'session.v3.jsonl.zstd'), { type: 'session', version: 3, cwd, id: 's-multi' }, ['{"seq":1}'])
+  writeSessionFile(path.join(dir, 'session.v4.jsonl.zstd'), { type: 'session', version: 4, cwd, id: 's-multi' }, ['{"seq":1}'])
+  // 另一个会话只有 v4：只认 session.jsonl.zstd 的实现会把它整个漏掉
+  const only4 = path.join(home, 'sessions', encodeSessionDir('D:\\deepseek\\other'), 's-v4')
+  writeSessionFile(path.join(only4, 'session.v4.jsonl.zstd'),
+    { type: 'session', version: 4, cwd: 'D:\\deepseek\\other', id: 's-v4' }, ['{"seq":1}'])
+
+  const scan = await scanSessions(home)
+  assert.equal(scan.sessions.length, 2)
+  const multi = scan.sessions.find((s) => s.dirName === 's-multi')
+  assert.deepEqual(multi.logs.map((l) => l.name).sort(),
+    ['session.jsonl.zstd', 'session.v3.jsonl.zstd', 'session.v4.jsonl.zstd'])
+  assert.equal(scan.problems.filter((p) => /没有任何会话日志/.test(p.message)).length, 0,
+    '变体不得被误报成「没有日志」')
+
+  const plan = planSessionMigration(scan, [{ from: 'D:/deepseek', to: 'E:/moved' }])
+  assert.equal(plan.stats.logFiles, 4, '四份日志都应被计入')
+  assert.equal(plan.stats.rewriteFiles, 4, '四份日志都应进改写清单')
+
+  const applied = await applySessionPlan(plan, { root: path.join(home, 'sessions'), onLog: () => {} })
+  assert.equal(applied.failed, 0)
+
+  for (const [newCwd, id] of [['E:/moved/dsh-chat', 's-multi'], ['E:/moved/other', 's-v4']]) {
+    const g = path.join(home, 'sessions', encodeSessionDir(newCwd), id)
+    assert.ok(fs.existsSync(g), '分组目录应改名到新编码：' + newCwd)
+    for (const name of fs.readdirSync(g)) {
+      assert.equal(readSessionHeader(path.join(g, name)).header.cwd, newCwd, name + ' 的 cwd 未改写')
+    }
+  }
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+test('同一会话里只有部分日志可改写时，坏的那份逐字节不动', { skip: !HAS_ZSTD }, async () => {
+  const home = tmpDir('partial')
+  const cwd = 'D:\\deepseek\\mix'
+  const dir = path.join(home, 'sessions', encodeSessionDir(cwd), 'p1')
+  writeSessionFile(path.join(dir, 'session.jsonl.zstd'), { type: 'session', cwd, id: 'p1' }, ['{"seq":1}'])
+  const torn = path.join(dir, 'session.v3.jsonl.zstd')
+  writeSessionFile(torn, { type: 'session', version: 3, cwd, id: 'p1' }, ['{"seq":1}'])
+  const extra = zlib.zstdCompressSync(Buffer.from('{"seq":2}\n'))
+  fs.appendFileSync(torn, extra.subarray(0, Math.floor(extra.length / 2)))
+  const tornBytes = fs.readFileSync(torn)
+
+  const scan = await scanSessions(home)
+  const s = scan.sessions[0]
+  assert.equal(s.logs.length, 2)
+  assert.equal(s.clean, false, '含撕裂尾帧的会话整体不算 clean')
+
+  const plan = planSessionMigration(scan, [{ from: 'D:/deepseek', to: 'E:/moved' }])
+  const step = plan.sessions.find((x) => x.dirName === 'p1')
+  assert.equal(step.action, 'partial')
+  assert.equal(step.logs.length, 1, '只有干净的日志进改写清单')
+  assert.equal(step.skipped.length, 1)
+
+  const applied = await applySessionPlan(plan, { root: path.join(home, 'sessions'), onLog: () => {} })
+  assert.equal(applied.failed, 0)
+  const moved = path.join(home, 'sessions', encodeSessionDir('E:/moved/mix'), 'p1')
+  assert.ok(fs.existsSync(path.join(moved, 'session.jsonl.zstd')), '干净的那份跟着分组目录改名')
+  assert.equal(readSessionHeader(path.join(moved, 'session.jsonl.zstd')).header.cwd, 'E:/moved/mix')
+  // 撕裂的那份只被 rename 带走，字节一个没动（断言的是「没被改写」，不是「被删掉」）
+  assert.deepEqual(fs.readFileSync(path.join(moved, 'session.v3.jsonl.zstd')), tornBytes,
+    '撕裂的日志必须逐字节不动')
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+test('profile 的 .dsh-market/state.json（停用清单 / 分组 / 区域）随行并落地', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('market')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+
+  mkSession(src, 'D:\\deepseek\\a', 'm1')
+  mkWorkspace(src, [['w1', 'D:\\deepseek\\a']])
+  const prof = path.join(src, 'profiles', 'desktop')
+  fs.mkdirSync(path.join(prof, '.dsh-market'), { recursive: true })
+  fs.writeFileSync(path.join(prof, 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+  const state = {
+    disabled: ['billion-context'],
+    groups: { mine: ['dsh-outline', 'dsh-sync'] },
+    groupOrder: ['mine'],
+    region: 'china',
+    regionAuto: true,
+  }
+  fs.writeFileSync(path.join(prof, '.dsh-market', 'state.json'), JSON.stringify(state))
+  fs.writeFileSync(path.join(src, 'settings.yaml'), 'theme: dark\n')
+  fs.mkdirSync(dst, { recursive: true })
+
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+  const inBundle = path.join(bundle, 'profiles', 'desktop', '.dsh-market', 'state.json')
+  assert.ok(fs.existsSync(inBundle), '导出必须带走 profile 的 .dsh-market/state.json')
+
+  const applied = await applyBundle({ bundleDir: bundle, dshHome: dst, mappings: [], onLog: () => {} })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  const landed = path.join(dst, 'profiles', 'desktop', '.dsh-market', 'state.json')
+  assert.ok(fs.existsSync(landed), '落地必须写入子目录路径')
+  assert.deepEqual(JSON.parse(fs.readFileSync(landed, 'utf8')), state)
+  fs.rmSync(root, { recursive: true, force: true })
 })

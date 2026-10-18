@@ -8,7 +8,7 @@ Two layers, and missing either one is not "identical":
 
 | Layer | Contents | What breaks without it |
 |---|---|---|
-| **Declaration layer** | `settings.yaml`, credentials (optional), home-level `cordis.patch.yml`, `AGENTS.md`, each profile's `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-workspace.yaml`, the source of every `link:` plugin | dsh will not start / **all plugins lost** / agent behaves differently |
+| **Declaration layer** | `settings.yaml`, credentials (optional), home-level `cordis.patch.yml`, `AGENTS.md`, each profile's `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-workspace.yaml` / `.dsh-market/state.json` (disabled plugins, custom groups, market region), the source of every `link:` plugin | dsh will not start / **all plugins lost** / disabled-state and grouping reset / agent behaves differently |
 | **State layer** | `sessions/`, `storages/`, `skills/`, `attachments/`, `background/`, `dsh-market/`, `llm-deepseek/` | dsh runs, but **every conversation is gone, workspace list empty, skills empty, attachments and backgrounds gone** |
 
 A profile's `package.json` is the truth about "the plugin situation": it decides both what gets installed (`dependencies`) and what actually loads (`dsh.profile.bundles`). It **must** travel — otherwise the plugin sources sit in `plugins/` with nothing to load them. And it cannot be copied verbatim: its `link:` entries are source-machine absolute paths, so export rewrites them to `link:../../plugins/<name>` pointing at the vendored copy, which holds wherever the target puts `$DSH_HOME`.
@@ -44,6 +44,16 @@ Both routes share the same mapping rules (`lib/path-map.js`), so the script can 
 
 A session looks like this: `sessions/<encoded-cwd>/<session-id>/session.jsonl.zstd`
 
+There is **more than one log filename** — the host left three forms behind as it evolved, and one session may hold several of them at once:
+
+| Filename | Header trait | Measured on the author machine |
+|---|---|---|
+| `session.jsonl.zstd` | no `version` field | 33 files |
+| `session.v3.jsonl.zstd` | `version: 3` | 45 files |
+| `session.v4.jsonl.zstd` | `version: 4` | 25 files |
+
+All three are structurally identical (concatenated zstd frames) and differ only in filename and the header `version`; copies of the same session agree on `cwd`. **Every variant is rewritten** — recognising only one of them silently leaves most sessions pointing at the old machine.
+
 It is not an ordinary compressed file but a **concatenation of zstd frames**: the first frame is a one-line JSON header (holding the authoritative `cwd`), and every frame after it is one event. Rewriting therefore replaces **only the first frame**, leaving the remaining frames **byte-for-byte untouched** — history cannot be corrupted, and it cannot be silently recompressed.
 
 Two invariants must both hold for dsh to find the session:
@@ -74,6 +84,7 @@ dsh-sync-bundle/
   AGENTS.md              # global instructions at the $DSH_HOME root
   profiles/<name>/       # package.json (link: already rewritten) / cordis.patch.yml /
                          #   cordis.yml / .npmrc / pnpm-workspace.yaml
+                         #   .dsh-market/state.json (disabled plugins, groups, market region)
   plugins/<name>/        # source of every link: plugin (node_modules/.git excluded)
   state/
     sessions/            # session files (real files only; symlinks are not here)
@@ -124,9 +135,9 @@ Ten invariants, each reported PASS / FAIL / WARN:
 | ID | Check |
 |---|---|
 | I1 | Every sha256 in the bundle matches |
-| I2 | Session count matches the source |
+| I2 | Both the session-folder count and the **log-file count** match the source (the latter catches "folder present, one log version lost") |
 | I3 | Every session folder name equals the encoding of its header `cwd` |
-| I4 | Session container structure intact (header decodes, frame chain complete) |
+| I4 | Session container structure intact (header decodes, frame chain complete); files already damaged on the source are copied verbatim and only WARN |
 | I5 | `workspace.json` paths align verbatim with session cwds (orphans that already existed on the source are only WARN; orphans introduced by the migration are FAIL) |
 | I6 | Symlinks rebuilt from the list (internal must succeed *and* resolve; external may be missing but must be visible) |
 | I7 | Vendored plugin sources are intact in the bundle |
@@ -193,7 +204,7 @@ Additional rules:
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 64 tests: pure functions + zstd frames + session migration + full export→apply→verify
+npm test        # 68 tests: pure functions + zstd frames + session migration + full export→apply→verify
 npm run verify
 ```
 

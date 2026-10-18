@@ -9,7 +9,7 @@
 
 | 层 | 内容 | 缺了会怎样 |
 |---|---|---|
-| **声明层** | `settings.yaml`、凭据(可选)、home 级 `cordis.patch.yml`、`AGENTS.md`、每个 profile 的 `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-workspace.yaml`、每个 `link:` 插件的源码 | dsh 起不来 / **插件全丢** / agent 行为与旧机不同 |
+| **声明层** | `settings.yaml`、凭据(可选)、home 级 `cordis.patch.yml`、`AGENTS.md`、每个 profile 的 `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-workspace.yaml` / `.dsh-market/state.json`(插件停用清单、自建分组、市场区域)、每个 `link:` 插件的源码 | dsh 起不来 / **插件全丢** / 插件停用与分组状态回到默认 / agent 行为与旧机不同 |
 | **状态层** | `sessions/`、`storages/`、`skills/`、`attachments/`、`background/`、`dsh-market/`、`llm-deepseek/` | dsh 能跑,但**历史会话全空、工作区列表空、skills 空、附件与背景图全没** |
 
 其中 `profiles/<n>/package.json` 是「插件情况」的真相:它同时决定装什么(`dependencies`)与
@@ -49,6 +49,17 @@
 
 一个会话长这样:`sessions/<编码后的cwd>/<session-id>/session.jsonl.zstd`
 
+日志文件名**不止一个**,宿主随版本演进留下了三种形态,同一次会话可能同时存在多份:
+
+| 文件名 | header 特征 | 本机实测 |
+|---|---|---|
+| `session.jsonl.zstd` | 无 `version` 字段 | 33 份 |
+| `session.v3.jsonl.zstd` | `version: 3` | 45 份 |
+| `session.v4.jsonl.zstd` | `version: 4` | 25 份 |
+
+三者结构完全相同(zstd 多帧串接),只是文件名与 header 的 `version` 不同;
+同一次会话的多份日志 `cwd` 一致。所以**全部变体一起改写**,只认其中一种会漏掉大量会话。
+
 它不是普通压缩文件,而是 **zstd 多帧串接**:首帧是一行 JSON header(含权威 `cwd`),
 其后每帧是一行事件。所以改写只替换**首帧**,其余帧**逐字节原样保留** ——
 历史内容不可能被改坏,也无法被"悄悄重压"。
@@ -82,7 +93,7 @@ dsh-sync-bundle/
   .credentials.yaml      # 或 .credentials.enc;需 includeCredentials
   AGENTS.md              # $DSH_HOME 根下的全局指令
   profiles/<name>/       # package.json(link: 已改写) / cordis.patch.yml / cordis.yml /
-                         #   .npmrc / pnpm-workspace.yaml
+                         #   .npmrc / pnpm-workspace.yaml / .dsh-market/state.json
   plugins/<name>/        # 每个 link: 插件的源码(已排除 node_modules/.git)
   state/
     sessions/            # 会话文件(真实文件;软链不在此)
@@ -135,9 +146,9 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 | ID | 核对内容 |
 |---|---|
 | I1 | bundle 自身 sha256 全部对得上 |
-| I2 | 会话数量与源机一致 |
+| I2 | 会话目录数与**日志份数**都与源机一致（后者能抓到「目录在、某一版日志丢了」） |
 | I3 | 每个会话目录名 = 其 header cwd 的编码 |
-| I4 | 会话容器结构完好(header 可解、帧链完整) |
+| I4 | 会话容器结构完好(header 可解、帧链完整)；源机自带的损坏文件按原样复制,只判 WARN |
 | I5 | `workspace.json` 路径与会话 cwd 逐字对齐（源机原有的孤立会话只算 WARN，迁移新增的孤立才算 FAIL） |
 | I6 | 软链按清单重建(内部必须成功且可解引用;外部允许缺路径但必须可见) |
 | I7 | vendored 插件源码在 bundle 中完好 |
@@ -214,7 +225,7 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 64 个测试:纯函数 + zstd 帧 + 会话迁移 + 全链路 export→apply→verify
+npm test        # 68 个测试:纯函数 + zstd 帧 + 会话迁移 + 全链路 export→apply→verify
 npm run verify
 ```
 
