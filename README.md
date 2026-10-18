@@ -225,7 +225,7 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 68 个测试:纯函数 + zstd 帧 + 会话迁移 + 全链路 export→apply→verify
+npm test        # 69 个测试:纯函数 + zstd 帧 + 会话迁移 + 全链路 export→apply→verify
 npm run verify
 ```
 

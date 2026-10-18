@@ -48,7 +48,8 @@ jobs:
         run: |
           set -o pipefail
           npm run verify 2>&1 | tee verify.log
-      # 失败时把日志尾部转成 annotation。
+      # 失败时把**失败测试块**转成 annotation（不是 tail：TAP 的尾部只有 summary，
+      # 断言详情在 not ok / ✖ 之后若干行里）。
       # 为什么要这一步：Actions 的日志下载端点需要仓库权限（匿名 GET
       # /repos/{owner}/{repo}/actions/jobs/<id>/logs 返回 403），而 annotation 是公开可读的。
       # 没有它，失败在外部只能看到「Process completed with exit code 1」，等于没有信息。
@@ -58,7 +59,10 @@ jobs:
         run: |
           echo "::error::verify failed on ${{ matrix.os }} / Node ${{ matrix.node }}"
           if [ -f verify.log ]; then
-            tail -n 60 verify.log | sed 's/%/%25/g' | while IFS= read -r line; do
-              echo "::error::${line}"
-            done
+            msg=$(awk '/^(not ok|✖)/{c=30} c>0{print; c--}' verify.log | head -n 120 \
+              | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 6000)
+            if [ -z "$msg" ]; then
+              msg=$(tail -n 40 verify.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 6000)
+            fi
+            if [ -n "$msg" ]; then echo "::error::${msg}"; fi
           fi

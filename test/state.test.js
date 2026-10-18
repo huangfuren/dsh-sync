@@ -17,7 +17,7 @@ import {
 import { parseFrames, readSessionHeader, rewriteSessionHeader, zstdAvailable } from '../lib/zstd-frame.js'
 import { scanLinks, linkWarnings } from '../lib/link-scan.js'
 import { exportBundle } from '../lib/bundle.js'
-import { applyBundle, verifyBundleIntegrity, inspectBundle } from '../lib/apply-engine.js'
+import { applyBundle, verifyBundleIntegrity, inspectBundle, rebuildLinks } from '../lib/apply-engine.js'
 import { runVerify } from '../lib/verify-engine.js'
 
 const HAS_ZSTD = zstdAvailable()
@@ -102,7 +102,12 @@ test('validateMappings 拦重复 from、空值，提示等价规则', () => {
   ])
   assert.ok(issues.some((i) => i.level === 'error' && /重复/.test(i.message)))
   assert.ok(issues.some((i) => i.level === 'error' && /不能为空/.test(i.message)))
-  assert.ok(validateMappings([{ from: 'D:/a', to: 'd:/A' }]).some((i) => i.level === 'warn'))
+  assert.equal(validateMappings([]).length, 0, '空映射集合不应报问题')
+  // 「等价规则」的判定按平台大小写：Windows 上 D:/a 与 d:/A 是同一路径，POSIX 上不是。
+  const caseEq = validateMappings([{ from: 'D:/a', to: 'd:/A' }]).some((i) => i.level === 'warn')
+  assert.equal(caseEq, process.platform === 'win32')
+  // 逐字相同则是任何平台都等价
+  assert.ok(validateMappings([{ from: 'D:/a', to: 'D:/a' }]).some((i) => i.level === 'warn'))
   assert.deepEqual(validateMappings('not-an-array').filter((i) => i.level === 'error').length, 1)
 })
 
@@ -626,7 +631,8 @@ test('目标机 $DSH_HOME 换位置时，内部链接必须重定位（而不是
     bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'D:/deepseek' }], onLog: () => {},
   })
   assert.equal(applied.ok, true, JSON.stringify(applied.errors))
-  assert.equal(applied.links.relocated, 1, '应报告 1 个链接被重定位')
+  assert.equal(applied.links.relocated, 1,
+    '应报告 1 个链接被重定位；跳过原因=' + JSON.stringify(applied.links.skipped))
 
   // 链接必须指向新 home 下的同一相对位置，而不是源机路径
   const linkAbs = path.join(dst, 'skills', 'linked')
@@ -687,13 +693,39 @@ test('$DSH_HOME 本身是符号链接时，内部链接仍判为 internal 并在
     bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'D:/deepseek' }], onLog: () => {},
   })
   assert.equal(applied.ok, true, JSON.stringify(applied.errors))
-  assert.equal(applied.links.relocated, 1, '应报告 1 个链接被重定位')
+  assert.equal(applied.links.relocated, 1,
+    '应报告 1 个链接被重定位；跳过原因=' + JSON.stringify(applied.links.skipped))
 
   const linkAbs = path.join(dst, 'skills', 'alias')
   const resolved = fs.realpathSync(linkAbs)
   const dstReal = fs.realpathSync(dst)
   assert.ok(isSameOrChild(resolved, dstReal), '链接必须落在目标机 $DSH_HOME 内，实际：' + resolved)
   assert.ok(fs.existsSync(path.join(linkAbs, 'SKILL.md')), '通过链接应能读到真实文件')
+
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('旧 bundle 的 links.json 没有 homeRel 时，仍按源机 home 前缀重定位', () => {
+  // 兼容路径：0.4.0 及更早导出的 bundle 只有绝对 target，没有 homeRel。
+  // 这条用例保证「新增字段」不是硬依赖，旧 bundle 不会因此变成死链。
+  const root = tmpDir('oldlinks')
+  const src = path.join(root, 'source-home')
+  const dst = path.join(root, 'dst')
+  fs.mkdirSync(path.join(src, 'skills', 'shared'), { recursive: true })
+  fs.mkdirSync(path.join(dst, 'skills', 'shared'), { recursive: true })
+  const bundle = path.join(root, 'bundle')
+  fs.mkdirSync(path.join(bundle, 'state'), { recursive: true })
+  // 0.4.0 的导出侧就是用 realpath 记录 target 的，这里按同样的口径构造
+  const target = fs.realpathSync(path.join(src, 'skills', 'shared'))
+  fs.writeFileSync(path.join(bundle, 'state', 'links.json'), JSON.stringify({
+    links: [{ scope: 'skills', rel: 'alias', target, linkText: target, kind: 'internal' }],
+  }))
+
+  const out = rebuildLinks(bundle, dst, { sourceHome: src })
+  assert.equal(out.relocated, 1, JSON.stringify(out.skipped))
+  assert.equal(out.created, 1, JSON.stringify(out.skipped))
+  const resolved = fs.realpathSync(path.join(dst, 'skills', 'alias'))
+  assert.ok(isSameOrChild(resolved, fs.realpathSync(dst)), '链接应指向目标机 home，实际：' + resolved)
 
   fs.rmSync(root, { recursive: true, force: true })
 })

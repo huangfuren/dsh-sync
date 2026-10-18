@@ -204,7 +204,7 @@ Additional rules:
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 68 tests: pure functions + zstd frames + session migration + full export→apply→verify
+npm test        # 69 tests: pure functions + zstd frames + session migration + full export→apply→verify
 npm run verify
 ```
 
