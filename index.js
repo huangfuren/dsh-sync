@@ -73,6 +73,18 @@ Links pointing outside \`$DSH_HOME\` go through the same mapping set, so a skill
 source follows the project to its new location; if no rule matches and the original target does not
 exist, the link is reported as broken rather than silently retargeted.
 
+### Which machine is which (settle this before anything else)
+The direction is not inferred, it is chosen: the machine running \`dshsync_export\` is the source, the one
+running \`dshsync_apply\` is the target. Two ways to get it backwards, neither of which fails on its own:
+exporting on the new machine yields a near-empty bundle that later clobbers the old machine's settings and
+plugin list while its sessions survive ("all history, no config"); applying on the old machine rewrites
+real session headers against a stale snapshot. Both are now guarded — export/preview warns when this
+machine has no sessions and no workspace records (it looks like a fresh install), and apply refuses when the
+bundle was produced by the same host with the same \`$DSH_HOME\` unless \`allowSameMachine=true\`.
+When the user asks which machine is the new one, give them verifiable signals, not a guess: is the project
+code present, what does \`preview=true\` list, how large is \`$DSH_HOME\`. The bundle records
+\`hostname + user + $DSH_HOME\` only — no hardware fingerprints.
+
 ### The three tools
 1. \`dshsync_export\` — on the source. \`preview=true\` first (scans, writes nothing). Use \`profile="*"\`.
 2. \`dshsync_apply\` — on the target, after copying the bundle over. **Always \`dryRun=true\` first.**

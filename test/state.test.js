@@ -920,3 +920,118 @@ test('apply 给了 workspaceRoot 就解包代码，并把会话 cwd 指到新落
   assert.equal(normalizePath(ws.tables.workspaces.w1.path), normalizePath(dest))
   fs.rmSync(root, { recursive: true, force: true })
 })
+
+test('export 记录本机身份（主机名 / 用户名 / DSH_HOME）', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('identity')
+  const src = path.join(root, 'src')
+  const bundle = path.join(root, 'bundle')
+  mkSession(src, path.join(root, 'proj'), 's1')
+  fs.mkdirSync(path.join(src, 'profiles', 'desktop'), { recursive: true })
+  fs.writeFileSync(path.join(src, 'profiles', 'desktop', 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+
+  const { manifest } = await exportBundle({
+    dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {},
+  })
+  const id = manifest.source.identity
+  assert.ok(id, 'manifest.source.identity 必须存在')
+  assert.equal(id.hostname, os.hostname())
+  assert.equal(id.user, os.userInfo().username)
+  assert.equal(normalizePath(id.dshHome), normalizePath(src))
+  // 刻意不采集硬件指纹
+  assert.deepEqual(Object.keys(id).sort(), ['dshHome', 'hostname', 'user'])
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('apply 拒绝把 bundle 落回它自己出生的机器，除非显式允许', { skip: !HAS_ZSTD }, async () => {
+  // 「哪台是新机」插件判断不了，方向由调用方决定。唯一能自动发现的是最坏的一种：
+  // 在旧机上跑 apply，用一份旧快照改写自己当前的会话首帧（不可逆）。
+  const root = tmpDir('same-machine')
+  const home = path.join(root, 'home')
+  const bundle = path.join(root, 'bundle')
+  mkSession(home, path.join(root, 'proj'), 's1')
+  fs.mkdirSync(path.join(home, 'profiles', 'desktop'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'profiles', 'desktop', 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+
+  await exportBundle({
+    dshHome: home, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {},
+  })
+
+  const blocked = await applyBundle({ bundleDir: bundle, dshHome: home, mappings: [], onLog: () => {} })
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.direction.sameMachine, true)
+  assert.ok(blocked.errors.some((e) => /\[方向\]/.test(e)), JSON.stringify(blocked.errors))
+  assert.ok(blocked.errors.some((e) => /allowSameMachine/.test(e)), '错误信息必须给出解法')
+  assert.equal(blocked.backupDir, null, '被拦下时不得动任何文件（连备份都不建）')
+
+  const forced = await applyBundle({
+    bundleDir: bundle, dshHome: home, mappings: [], allowSameMachine: true, onLog: () => {},
+  })
+  assert.equal(forced.ok, true, JSON.stringify(forced.errors))
+  assert.ok(forced.warnings.some((w) => /allowSameMachine=true 继续/.test(w)))
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('老 bundle 没有源机身份时如实说判不了，不假装通过', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('no-identity')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  mkSession(src, path.join(root, 'proj'), 's1')
+  fs.mkdirSync(path.join(src, 'profiles', 'desktop'), { recursive: true })
+  fs.writeFileSync(path.join(src, 'profiles', 'desktop', 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+  fs.mkdirSync(dst, { recursive: true })
+
+  await exportBundle({
+    dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {},
+  })
+  // 模拟 0.6.0 之前导出的 bundle：manifest 里没有 identity（manifest.json 不进 sha256，可安全改写）
+  const mf = path.join(bundle, 'manifest.json')
+  const m = JSON.parse(fs.readFileSync(mf, 'utf8'))
+  delete m.source.identity
+  fs.writeFileSync(mf, JSON.stringify(m, null, 2))
+
+  const applied = await applyBundle({ bundleDir: bundle, dshHome: dst, mappings: [], onLog: () => {} })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  assert.equal(applied.direction.source, null)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('空壳自检：无会话无工作区的导出要报警，有历史的不能乱报', { skip: !HAS_ZSTD }, async () => {
+  const mkHome = (name) => {
+    const h = path.join(tmpDir('shell-' + name), 'home')
+    fs.mkdirSync(path.join(h, 'profiles', 'desktop'), { recursive: true })
+    fs.writeFileSync(path.join(h, 'profiles', 'desktop', 'package.json'),
+      JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+    return h
+  }
+
+  // ① 空壳：会话 0、工作区 0 → 必须报 direction 告警
+  const emptyHome = mkHome('empty')
+  const r1 = await exportBundle({
+    dshHome: emptyHome, profiles: ['desktop'], outDir: path.join(path.dirname(emptyHome), 'b1'),
+    includeState: true, onLog: () => {},
+  })
+  assert.ok(r1.warnings.some((w) => w.where === 'direction'), '空壳机导出必须提示方向可能搞反：'
+    + JSON.stringify(r1.warnings))
+
+  // ② 有历史：不许误报（否则这条告警会变成噪音，真搞反时没人看）
+  const usedHome = mkHome('used')
+  mkSession(usedHome, path.join(path.dirname(usedHome), 'proj'), 's1')
+  const r2 = await exportBundle({
+    dshHome: usedHome, profiles: ['desktop'], outDir: path.join(path.dirname(usedHome), 'b2'),
+    includeState: true, onLog: () => {},
+  })
+  assert.ok(!r2.warnings.some((w) => w.where === 'direction'), '有会话的机器不得报空壳：'
+    + JSON.stringify(r2.warnings))
+
+  // ③ includeState=false 时「空」是没量过，不是量出来为空 → 不许报
+  const r3 = await exportBundle({
+    dshHome: emptyHome, profiles: ['desktop'], outDir: path.join(path.dirname(emptyHome), 'b3'),
+    includeState: false, onLog: () => {},
+  })
+  assert.ok(!r3.warnings.some((w) => w.where === 'direction'), '没扫状态层就不能断言空壳：'
+    + JSON.stringify(r3.warnings))
+})

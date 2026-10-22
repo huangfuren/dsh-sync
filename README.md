@@ -109,6 +109,36 @@ dshsync_apply(bundleDir="<bundle>", workspaceRoot="E:/code", dryRun=true)
 **绝不反向解析目录名**。`storages/workspace.json` 里也存了每个工作区的 `path`,
 它必须与会话 `cwd` 逐字一致 —— 因此同一套映射同时作用于两者。
 
+## 先确认哪台是「新机」
+
+这件事**不能靠插件判断**：dsh-sync 不知道哪台是新机，方向完全由「在哪台机器上跑哪个工具」决定
+—— 跑 `dshsync_export` 的那台就是源机（旧），跑 `dshsync_apply` 的那台就是目标机（新）。搞反了
+有两种结局，而且都不会自然报错：
+
+| 搞反的方式 | 结果 | 现在怎么拦 |
+| --- | --- | --- |
+| 在**新机**上跑导出 | bundle 几乎是空的；拿回旧机 apply 会把设置与插件覆盖成默认值，而旧机的会话因为新 bundle 里没有反而留着 → 「历史都在、配置全没」 | 导出与预览都会报「这台机器没有任何会话、也没有工作区记录，看起来像刚装好的空壳」 |
+| 在**旧机**上跑落地 | 用一份旧快照改写自己的会话首帧（cwd 与目录名），不可逆 | apply 检测到「同主机 + 同 `$DSH_HOME`」直接拒绝，要 `allowSameMachine=true` 才继续 |
+
+判断哪台是新机，三个信号，按不易出错的顺序：
+
+1. **项目代码在不在** —— 最硬的一条。旧机有那批项目目录（本机是 `D:\deepseek\dsh-plugin\mine\`），
+   新机刚装完是没有的。
+2. **`dshsync_export(preview=true)` 的清单** —— 它会列出会话数、涉及的工作区路径、profile 里自装的
+   插件数。**有历史的那个就是旧机**。本机实测基准：84 个会话 / 8 个工作区路径 / 11 个 vendored 插件。
+3. **`$DSH_HOME` 体积** —— 旧机 630 MB 左右；刚装好的新机通常不到 100 MB。
+
+导出时 bundle 会记下源机的 `主机名 + 用户名 + DSH_HOME`，落地时据此核对方向并打印一行：
+
+```
+✓ 方向：源机 DESKTOP-OLD/jichen.huang → 本机 DESKTOP-NEW/jichen.huang
+```
+
+同机但 `DSH_HOME` 不同（就地预演、一台机器上两套环境）会照常放行并注明；同机同 `DSH_HOME` 会被
+拦下。0.6.0 之前导出的 bundle 没有这个字段，就如实说「判不了方向」，而不是假装通过。
+
+记录里**只有这三项**，不含 MAC、机器 GUID、磁盘序列号 —— 那些是硬件指纹，搬配置的工具有意不碰。
+
 ## 用法
 
 ### 旧电脑:导出
@@ -299,7 +329,7 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 110 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 全链路 export→apply→verify
+npm test        # 114 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 全链路 export→apply→verify
 npm run verify
 ```
 

@@ -101,6 +101,41 @@ Two invariants must both hold for dsh to find the session:
 
 That encoding is **lossy** (`:`, `\`, `/` and `-` all collapse into `-`), so it may only ever be computed forward from the header — **never** parsed backwards from a folder name. `storages/workspace.json` also stores a `path` per workspace, and it must match the session `cwd` verbatim — which is why one mapping set drives both.
 
+## First, which machine is the NEW one?
+
+The plugin **cannot** work this out for you. dsh-sync does not know which machine is new; the direction
+comes entirely from *where you run which tool* — whichever machine runs `dshsync_export` is the source
+(the old one), whichever runs `dshsync_apply` is the target (the new one). Get it backwards and there are
+two outcomes, neither of which fails on its own:
+
+| Getting it backwards | What happens | How it is caught now |
+| --- | --- | --- |
+| Exporting on the **new** machine | The bundle is nearly empty; applying it onto the old machine overwrites settings and plugins with defaults, while the old sessions survive (the new bundle has none) → "all history, no config" | Export and preview both report "this machine has no sessions and no workspace records — it looks like a fresh shell" |
+| Applying on the **old** machine | Your real data gets rewritten against an old snapshot — session header cwd and folder names, irreversible | apply refuses when it sees "same host + same `$DSH_HOME`"; it takes `allowSameMachine=true` to proceed |
+
+Three signals for telling them apart, most reliable first:
+
+1. **Is the project code there?** Hardest to fake. The old machine has those directories
+   (`D:\deepseek\dsh-plugin\mine\` here); a fresh install does not.
+2. **The `dshsync_export(preview=true)` listing** — session count, distinct workspace paths, self-installed
+   plugins. **The one with history is the old machine.** Baseline measured here: 84 sessions /
+   8 workspace paths / 11 vendored plugins.
+3. **`$DSH_HOME` size** — around 630 MB on the old machine, usually well under 100 MB on a fresh install.
+
+The bundle records the source's `hostname + user + DSH_HOME`, and apply checks the direction against them,
+printing one line:
+
+```
+✓ direction: source DESKTOP-OLD/jichen.huang → this machine DESKTOP-NEW/jichen.huang
+```
+
+Same host with a different `DSH_HOME` (an in-place rehearsal, two environments on one box) is allowed and
+labelled as such; same host and same `DSH_HOME` is refused. Bundles exported before 0.6.0 have no such
+field, and apply says the direction cannot be checked instead of pretending it passed.
+
+Those three fields are **all** that is recorded — no MAC address, no machine GUID, no disk serial. Those are
+hardware fingerprints and a config-migration tool has no business collecting them.
+
 ## Usage
 
 ### Old machine: export
@@ -279,7 +314,7 @@ Additional rules:
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 110 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + full export→apply→verify
+npm test        # 114 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + full export→apply→verify
 npm run verify
 ```
 
