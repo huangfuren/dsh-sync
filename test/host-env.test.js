@@ -14,6 +14,7 @@ import path from 'node:path'
 import {
   readRuntimeManifests, pickRuntimeManifest, probeRuntime,
   compareRuntime, summarizeRuntime, semverOf, semverCore, semverMajor,
+  readDesktopRelease, desktopRuntimeCandidates,
 } from '../lib/host-env.js'
 import { exportBundle } from '../lib/bundle.js'
 import { buildApplyPs1, buildApplySh } from '../lib/apply-script.js'
@@ -24,6 +25,11 @@ function tmpDir(tag) {
   const d = path.join(os.tmpdir(), `dshsync-env-${tag}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`)
   fs.mkdirSync(d, { recursive: true })
   return d
+}
+
+/** 路径比较统一口径：解析 `..` 并压成 `/`，避免 Windows 反斜杠造成假失败。 */
+function normalize(p) {
+  return path.resolve(p).replace(/\\/g, '/')
 }
 
 /** 造一份运行时清单：`<home>/dsh-runtimes/<id>/runtime.json`。 */
@@ -287,4 +293,85 @@ test('verify 输出 I11，并在目标机版本不同时报 WARN', async () => {
     fs.rmSync(dst, { recursive: true, force: true })
     fs.rmSync(out, { recursive: true, force: true })
   }
+})
+
+// ── 桌面版：版本要从安装包自己拿，不能信 dsh-runtimes 的陈旧快照 ─────────────
+// 本机真实事故：应用已是 0.2.1-rc.2（内置 node 24.21.0 / pnpm 11.28.5），而
+// `$DSH_HOME/dsh-runtimes/dsh-primary-runtime/runtime.json` 还停在 0.2.0-rc.2 / pnpm 11.7.0 ——
+// 那份清单位于**安装时**写入，升级不会刷新它。用它比对的后果不是「少一条提示」，而是
+// 换到刚装好的新机（快照新鲜）时两台版本明明相同却报不一致；两边都陈旧时又会把真跨代抹平。
+function writeFakeDesktop(root, release) {
+  const dir = path.join(root, 'resources', 'app.asar', 'dsh')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'desktop-runtime.json'), JSON.stringify({
+    schemaVersion: 1,
+    release,
+    platform: 'win32',
+    arch: 'x64',
+    sharedPackages: [],
+  }, null, 2) + '\n')
+  return { versions: { electron: '44.7.0' }, resourcesPath: path.join(root, 'resources'), execPath: path.join(root, 'DeepSeek Harness.exe') }
+}
+
+test('desktopRuntimeCandidates 只在 Electron 里给出路径，且优先 resourcesPath', () => {
+  assert.deepEqual(desktopRuntimeCandidates({ versions: { node: '24.0.0' } }), [],
+    'web 宿主 / CLI 没有安装包可读，必须返回空数组而不是瞎猜路径')
+
+  const env = { versions: { electron: '44.7.0' }, resourcesPath: 'C:/app/resources', execPath: 'C:/app/App.exe' }
+  const c = desktopRuntimeCandidates(env)
+  assert.equal(c.length, 2)
+  assert.equal(normalize(c[0]), normalize('C:/app/resources/app.asar/dsh/desktop-runtime.json'))
+  assert.equal(normalize(c[1]), normalize('C:/app/App.exe/../resources/app.asar/dsh/desktop-runtime.json'),
+    'resourcesPath 缺失时的兜底是「可执行文件同级的 resources」')
+})
+
+test('readDesktopRelease 取到安装包声明的版本与 node/pnpm，缺字段写 null 不编', () => {
+  const root = tmpDir('desktop-ok')
+  const env = writeFakeDesktop(root, {
+    version: '0.2.1-rc.2', hostProtocolVersion: 4, nodeVersion: '24.21.0', pnpmVersion: '11.28.5',
+  })
+  const rel = readDesktopRelease(env)
+  assert.equal(rel.version, '0.2.1-rc.2')
+  assert.equal(rel.node, '24.21.0')
+  assert.equal(rel.pnpm, '11.28.5')
+  assert.equal(rel.hostProtocolVersion, 4)
+  assert.equal(rel.platform, 'win32')
+
+  const bare = path.join(root, 'bare')
+  fs.mkdirSync(path.join(bare, 'resources', 'app.asar', 'dsh'), { recursive: true })
+  fs.writeFileSync(path.join(bare, 'resources', 'app.asar', 'dsh', 'desktop-runtime.json'),
+    JSON.stringify({ release: { version: '0.2.1-rc.2' } }))
+  const slim = readDesktopRelease({ versions: { electron: '1' }, resourcesPath: path.join(bare, 'resources'), execPath: '' })
+  assert.equal(slim.version, '0.2.1-rc.2')
+  assert.equal(slim.node, null, '没写 nodeVersion 就是 null，不许拿 process 的版本冒充宿主内置 node')
+  assert.equal(slim.pnpm, null)
+  assert.equal(slim.hostProtocolVersion, null)
+
+  const none = readDesktopRelease({ versions: { electron: '1' }, resourcesPath: path.join(root, 'nope'), execPath: '' })
+  assert.equal(none, null, '读不到必须是 null，让调用方继续走后面的来源')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('probeRuntime 在桌面版里优先用安装包的版本，压过陈旧的 dsh-runtimes 快照', async () => {
+  const root = tmpDir('desktop-stale')
+  const home = path.join(root, 'home')
+  // 陈旧快照：升级前写下的 0.2.0-rc.2
+  writeRuntime(home, 'dsh-primary-runtime', {
+    desktopVersion: '0.2.0-rc.2', platform: 'win32', arch: 'x64', node: '24.21.0', pnpm: '11.7.0',
+  })
+  const env = writeFakeDesktop(path.join(root, 'app'), {
+    version: '0.2.1-rc.2', hostProtocolVersion: 4, nodeVersion: '24.21.0', pnpmVersion: '11.28.5',
+  })
+
+  const fromDesktop = await probeRuntime(home, { env })
+  assert.equal(fromDesktop.dshVersion, '0.2.1-rc.2', '正在跑的宿主才是权威，快照过期不能反过来盖住它')
+  assert.equal(fromDesktop.source, 'desktop-app')
+  assert.equal(fromDesktop.pnpm, '11.28.5')
+  assert.equal(fromDesktop.runtimeNode, '24.21.0')
+
+  // 同一台机器上用 web 宿主（无 Electron）时，仍走快照那条路，行为不变
+  const fromSnapshot = await probeRuntime(home, { env: { versions: { node: '24.21.0' } } })
+  assert.equal(fromSnapshot.dshVersion, '0.2.0-rc.2')
+  assert.equal(fromSnapshot.source, 'dsh-runtimes')
+  fs.rmSync(root, { recursive: true, force: true })
 })

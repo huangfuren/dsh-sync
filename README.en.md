@@ -138,6 +138,37 @@ field, and apply says the direction cannot be checked instead of pretending it p
 Those three fields are **all** that is recorded — no MAC address, no machine GUID, no disk serial. Those are
 hardware fingerprints and a config-migration tool has no business collecting them.
 
+## Desktop app vs web host
+
+Same plugin, same seven tools: there is no client half and no build step, so the loading path is identical.
+Two things genuinely differ, and both have bitten:
+
+**① The profile you run is not necessarily `web`.** The desktop app loads `profiles/desktop`; a plugin
+installed only into `profiles/web` simply does not exist there (files present, nothing in the UI). Two
+consequences: this plugin's `profile` defaults to `*` (all profiles), so an omission cannot silently skip the
+one you actually use; and the plugin itself has to be installed into that profile. One command tells you:
+
+```bash
+dsh plugin --profile desktop list     # the desktop app ships this CLI
+```
+
+**② A desktop machine has no `pnpm` or `dsh` on PATH.** The app bundles its own (pnpm 11.28.5 here), so do
+**not** follow the web habit of running `pnpm install` from a shell after landing:
+
+- land the profile files → quit the app completely (tray, not the window) → reopen; the host reconciles
+  dependencies from the new `package.json`;
+- if the plugin list comes up empty, use "reinstall/repair" once in the plugin manager, then restart;
+- do not touch settings in the UI before restarting — the host may flush what it holds in memory over the
+  files that were just landed.
+
+**③ The host version is read from the installed app, not from the `dsh-runtimes` snapshot.** That snapshot is
+written **at install time** and is not refreshed when the app updates: measured here, the app was already
+`0.2.1-rc.2` (node 24.21.0 / pnpm 11.28.5) while the snapshot still said `0.2.0-rc.2` / pnpm 11.7.0, dated
+ten days earlier. Comparing against a stale snapshot makes the most common case — moving to a freshly
+installed machine — report a false mismatch, and when both snapshots are stale it flattens a real
+cross-minor gap, which is exactly the precursor of "installed but not loaded". The running app's own
+`resources/app.asar/dsh/desktop-runtime.json` is now read first; the snapshot is only a fallback.
+
 ## Usage
 
 ### Old machine: export
@@ -385,7 +416,7 @@ blocked.
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 149 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + full export→apply→verify
+npm test        # 152 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + full export→apply→verify
 npm run verify
 ```
 

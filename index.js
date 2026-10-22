@@ -109,11 +109,24 @@ A bundle can be perfect and the target still show an empty plugin list: the host
 ruling at startup, and a version mismatch leaves every plugin \`stays installed but startup denies it\`.
 Files present, sha256 correct, every state invariant green — nothing loads. So the host version is
 recorded on export (\`manifest.source\`) and compared on both landing paths.
-It is read from \`$DSH_HOME/dsh-runtimes/<runtime>/runtime.json\` (\`desktopVersion\`), **not** from
-\`dsh --version\` — desktop builds expose no \`dsh\` command at all, which is exactly why this check used to
-run and always find nothing. A gap within the same \`major.minor\` is a soft warning (runtime manifests
-legitimately lag a patch); across \`major.minor\` it names the waiver you will need. Unknown on either
-side is reported as "needs manual confirmation", never silently passed.
+It is read from the running desktop app's own \`resources/app.asar/dsh/desktop-runtime.json\` first, and only
+falling back to \`$DSH_HOME/dsh-runtimes/<runtime>/runtime.json\` — never from \`dsh --version\`, which desktop
+builds do not have at all (that is why this check used to run and always find nothing). The fallback matters
+because the runtime manifest is written **at install time** and is not refreshed when the app updates: one
+machine here reported 0.2.0-rc.2 while the app running was 0.2.1-rc.2, which would flag a false mismatch
+against a freshly installed machine and, worse, mask a real one when both snapshots are stale.
+A gap within the same \`major.minor\` is a soft warning (patch-level lag is normal); across \`major.minor\` it
+names the waiver you will need. Unknown on either side is "needs manual confirmation", never silently passed.
+
+### Desktop app vs web host
+Same plugin, same seven tools: this is a host-only plugin (no client half, no build step), so the loading
+path is identical in both. Two things genuinely differ, and both have bitten:
+- **The profile you actually run is not necessarily \`web\`.** The desktop app loads \`profiles/desktop\`;
+  a plugin installed only into \`profiles/web\` is simply absent from the UI. That is why \`profile\` defaults
+  to \`"*"\` here, and why you should install this plugin into the profile you really use.
+- **There is no \`pnpm\` or \`dsh\` on PATH on a desktop machine.** The app ships its own pnpm internally.
+  Never tell a desktop user to run \`pnpm install\`: land the profile files and let the app reconcile them on
+  the next start; if the plugin list comes up empty, reinstall/repair once from the plugin manager.
 
 ### Secrets
 \`.credentials.yaml\` holds live keys and is excluded unless \`includeCredentials=true\`. Pass
@@ -192,7 +205,7 @@ function defaultOutDir() {
 // dshProfileDir 类「用户几乎不改」的路径字段不进表单，故不标 volatile。
 export const Config = Schema.object({
   dshHome: Schema.string().default('').volatile().description('Source $DSH_HOME. Empty = $DSH_HOME env or ~/.dsh.'),
-  profile: Schema.string().default('web').volatile().description('Default profile name to export.'),
+  profile: Schema.string().default('*').volatile().description('Profile to export. "*" = every profile (default).'),
   outDir: Schema.string().default('').volatile().description('Default bundle output directory. Empty = temp/dsh-sync-bundle.'),
   includeCredentials: Schema.boolean().default(false).volatile().description('Include .credentials.yaml (real secrets). Off by default.'),
   includePlugins: Schema.boolean().default(true).volatile().description('Vendor link: plugin sources into the bundle.'),
@@ -207,7 +220,9 @@ export function apply(ctx, config = {}) {
   // 宿主 API 改名时只降级对应能力并打日志，不向外抛异常。
   const entryConfig = {
     dshHome: defaultDshHome(),
-    profile: 'web',
+    // 默认导全部 profile。原先写死 'web' 的后果在桌面版上很具体：不传 profile 时会去导
+    // `profiles/web`，而桌面版真正在用的是 `profiles/desktop` —— 搬完一台「看起来成功」的空机。
+    profile: '*',
     outDir: defaultOutDir(),
     includeCredentials: false,
     includePlugins: true,
