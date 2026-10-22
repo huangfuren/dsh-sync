@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.5.0 (2026-10-22)
+
+补上一条**一直存在、但从来没生效过**的兼容性检查：宿主运行时一致性。
+
+问题的形状很典型 —— 代码里写了、报告里看着正常、实际一次都没跑成：
+
+- `captureEnvironment()` 只问 `dsh --version`。桌面端的 dsh **没有命令别名**
+  （本机 `which dsh` 为空，CLI 要经 Electron 主程序 `ELECTRON_RUN_AS_NODE` 才能调），
+  于是 `manifest.source.dshVersion` **恒为 `null`**。
+- 下游两处版本预警都以「`dshVersion` 非空」为前提：`apply.ps1` / `apply.sh` 里那段
+  还额外要求 `dsh` 在 PATH —— 双重前提几乎必然不成立，等于从不出声。
+- `dshsync_apply` / `dshsync_verify` **根本没有这条**：10 条不变量里没有运行时版本。
+
+后果不是「有点差异」，而是**界面里插件全空**：宿主启动时做 peer 兼容性裁决，版本对不上时插件
+`stays installed but startup denies it` —— 文件都在、sha256 全对、I1–I10 全绿，就是不加载。
+这个失败模式从状态层完全看不出来，所以它必须有独立一条。
+
+新增：
+
+- **`lib/host-env.js`**：宿主运行时指纹（dsh 版本 / 平台 / 架构 / 宿主自带 node / pnpm）。
+  取版本**不依赖 PATH 上有 `dsh` 命令**，顺序为
+  `dsh-runtimes/<runtime>/runtime.json` 的 `desktopVersion`（桌面端宿主自己写的清单，本机实测可取到）
+  → `profiles/*/node_modules/@deepseek-ai/dsh/package.json`
+  → `dsh --version` 兜底。取不到一律写 `null`，**绝不猜**。
+  多份运行时清单并存时优先 `dsh-primary-runtime`（装了插件运行时后目录会变多，
+  按名排序取第一个会把插件运行时的 node 当成宿主的）。
+- **`verify` 新增 I11「宿主运行时一致性」**，比对版本 / 平台 / 架构 / node 大版本。
+  分级：跨 `major.minor` → 提示 peer 裁决拒装；同 `major.minor` 内（仅 patch 或预发布不同，
+  运行时清单落后一个 patch 是常态）→ 弱提示，不制造噪音。
+  node 比的是**宿主自带那份**（`runtime.json` 的 `node`），不是跑探测的进程 —— zstd 内建能力看的是前者。
+- **`dshsync_apply` 在 dryRun 阶段就报这条**（`report.runtime` + warnings），此时还没动目标机，
+  用户可以直接决定要不要先对齐版本。
+- **`apply.ps1` / `apply.sh` 改为同一口径**：先从目标机 `dsh-runtimes/*/runtime.json` 取版本，
+  读不到再退 `dsh --version`；两机版本都取不到时明确说「无法确定」，不再静默。
+
+顺手修掉这两个脚本里同类的两处静默失效（都是「看着有代码、实际不生效」）：
+
+- **`apply.sh` 把 `$BUNDLE` 拼进了 JS 字符串**（`node -p "...require('$BUNDLE/manifest.json')..."`）。
+  Git Bash 下 `$BUNDLE` 是 `/d/xxx` 形式，而只有**原生参数**才会被 MSYS 转成 Windows 路径；
+  内嵌进字符串后 node 认不出 → `src_ver` 恒为空 → 整段版本比对静默跳过。
+  现在路径作为 `argv[1]` 传入。
+- **`apply.sh` 的 `usage()` heredoc 未加引号**。脚本开头是 `set -u`，而 `DSH_HOME` 在多数机器上没设，
+  于是 `--help` 和任何一个拼错的参数都会崩在 `DSH_HOME: unbound variable`，帮助信息根本打不出来。
+  改为 `cat <<'EOF'`。
+
+测试 69 → 86：新增 `test/host-env.test.js`（17 条）。其中三条是这次的真实回归钉：
+`导出把 runtime.json 里的宿主版本写进 manifest.source`（原先恒 `null`）、
+`verify 输出 I11 并在版本不同时报 WARN`、
+`生成的 apply.ps1 / apply.sh 都从 dsh-runtimes 取版本`（同时钉住上面两处脚本修复）；
+另有 `pickRuntimeManifest 优先取 dsh-primary-runtime`（防「取到插件运行时」）、
+`任一端版本未知时不假判 PASS`（防「静默通过」）。
+
+脚本侧三种场景已实测（目标机跨代 / 取不到 / 相同）：跨代与取不到各出一行黄色提示，相同则不出声。
+
+实测：本机 `dsh-runtimes/dsh-primary-runtime/runtime.json` 读到 `0.2.0-rc.2`，
+在此之前这条路径完全拿不到版本号。
+
 ## 0.4.2 (2026-10-18)
 
 0.4.1 推送后 CI 六平台仍全红。CI 日志端点需要仓库权限（匿名 403），

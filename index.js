@@ -63,7 +63,19 @@ as broken rather than silently retargeted.
    folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
    had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
    presence, workspace directories actually existing on the target, profile \`link:\` resolvability and
-   \`node_modules\` state, and state-part coverage. Treat a FAIL as "dsh will not see that part of the state".
+   \`node_modules\` state, state-part coverage, and **host runtime agreement**.
+   Treat a FAIL as "dsh will not see that part of the state".
+
+### Host version (the failure that hides from every file check)
+A bundle can be perfect and the target still show an empty plugin list: the host runs a peer-compatibility
+ruling at startup, and a version mismatch leaves every plugin \`stays installed but startup denies it\`.
+Files present, sha256 correct, every state invariant green — nothing loads. So the host version is
+recorded on export (\`manifest.source\`) and compared on both landing paths.
+It is read from \`$DSH_HOME/dsh-runtimes/<runtime>/runtime.json\` (\`desktopVersion\`), **not** from
+\`dsh --version\` — desktop builds expose no \`dsh\` command at all, which is exactly why this check used to
+run and always find nothing. A gap within the same \`major.minor\` is a soft warning (runtime manifests
+legitimately lag a patch); across \`major.minor\` it names the waiver you will need. Unknown on either
+side is reported as "needs manual confirmation", never silently passed.
 
 ### Secrets
 \`.credentials.yaml\` holds live keys and is excluded unless \`includeCredentials=true\`. Pass

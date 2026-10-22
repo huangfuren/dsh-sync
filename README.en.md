@@ -130,7 +130,7 @@ Mapping rules: **applied in order, first match wins, and a match must fall on a 
 dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 ```
 
-Ten invariants, each reported PASS / FAIL / WARN:
+Eleven invariants, each reported PASS / FAIL / WARN:
 
 | ID | Check |
 |---|---|
@@ -144,8 +144,18 @@ Ten invariants, each reported PASS / FAIL / WARN:
 | I8 | The **workspace directories** behind each session cwd actually exist on the target (workspace code is not inside `$DSH_HOME`; without it sessions list but will not open) |
 | I9 | The profile's `link:` dependencies resolve on the target; whether `node_modules` is installed |
 | I10 | All 7 state parts landed, with file counts matching the source |
+| I11 | Host runtime matches (dsh version / platform / arch / node major). A cross-generation version gap makes plugins **denied at startup** |
 
 `FAIL` means: **dsh cannot see this state.** Not "might be a bit off" — it is definitely out of sync.
+
+I11 is a WARN rather than a FAIL: upgrading dsh while migrating is legitimate and must not be blocked.
+But it guards the nastiest failure of all — the host runs a peer-compatibility ruling at startup, and a
+version mismatch leaves plugins `stays installed but startup denies it`: every file present, every sha256
+correct, I1–I10 green, **and the plugin list empty**. Without this line you would blame dsh-sync for
+losing your plugins.
+
+Versions are never guessed: if either side is unavailable the check says "needs manual confirmation"
+instead of quietly passing.
 
 ## Tools
 
@@ -193,6 +203,11 @@ Additional rules:
 
 - **The target must rebuild dependencies**: `node_modules` does not travel. After landing, run `pnpm install` (or `dsh plugin add`) once on the target, otherwise dsh will not start — verify reports this as a WARN on I9, so you are never left thinking it is done.
 - **The target needs node ≥22.15** for built-in zstd; otherwise sessions are not migrated (and it says so loudly, never silently).
+- **The host version is read from `dsh-runtimes/<runtime>/runtime.json` (`desktopVersion`)**, which is not the
+  installer version — after an app upgrade without reinstalling the runtime it can lag by a patch, so a
+  difference within the same `major.minor` is only a soft warning. Across `major.minor`, plugins may be denied
+  at startup and need an exact-version waiver in the plugin manager. If no version can be resolved at all
+  (neither `dsh-runtimes` nor a `dsh` command), it reports "needs manual confirmation" rather than guessing.
 - **Workspace code is not inside `$DSH_HOME`**: session cwds point at project directories (separate repos). If the target lacks them, sessions list but will not open — I8 names every missing directory. To reuse the same history, copy those repos too, or point `mappings` at equivalent directories on the target.
 - **`link:` dependencies are rewritten automatically**: they point at `$DSH_HOME/plugins/<name>` relatively, so a different location still works. Only **unvendored** ones (missing source, or `includePlugins=false`) keep the source path, and the report calls them out.
 - **External symlinks need matching paths on the target**: `skills/` links pointing outside `$DSH_HOME` fail to rebuild when that directory does not exist, and are **reported honestly** rather than silently repointed.
@@ -204,7 +219,7 @@ Additional rules:
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 69 tests: pure functions + zstd frames + session migration + full export→apply→verify
+npm test        # 86 tests: pure functions + zstd frames + session migration + host runtime fingerprint + full export→apply→verify
 npm run verify
 ```
 

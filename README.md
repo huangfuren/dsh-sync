@@ -155,8 +155,15 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 | I8 | 会话 cwd 指向的**工作区目录在目标机真的存在**(工作区代码不在 `$DSH_HOME` 内,缺了会话能列出但打不开) |
 | I9 | profile 的 `link:` 依赖在目标机可解析;`node_modules` 是否已装 |
 | I10 | 状态层 7 个部分全部落地,文件数与源机一致 |
+| I11 | 宿主运行时一致(dsh 版本 / 平台 / 架构 / node 大版本);版本跨代会让插件被**启动时拒装** |
 
 `FAIL` 的含义是:**这部分状态 dsh 看不到**。不是"可能有点问题",是确定对不上。
+
+I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被工具拦下。但它挡的是最阴的一种失败 ——
+宿主启动时做 peer 兼容性裁决,版本对不上时插件是 `stays installed but startup denies it`:
+文件都在、sha256 全对、I1–I10 全绿,**界面里插件却是空的**。这条提示不给,用户会以为是 dsh-sync 搬丢了东西。
+
+版本取不到时不猜:两端任一取不到就报「需人工确认」,不假判 `PASS`。
 
 ## 工具
 
@@ -209,6 +216,10 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 - **目标机需自重建依赖**:`node_modules` 不随行。落地后必须在目标机跑一次
   `pnpm install`(或 `dsh plugin add`),否则 dsh 起不来 —— verify 的 I9 会把这件事报成 WARN,不会让您以为完事了。
 - **目标机 node 需 ≥22.15**才有内建 zstd;否则会话不迁移(会明确告警,不静默跳过)。
+- **宿主版本由 `dsh-runtimes/<runtime>/runtime.json` 的 `desktopVersion` 判定**,
+  它不是安装包的版本,宿主升级后若没重装运行时就会差一个 patch —— 所以同 `major.minor` 内的差异只作弱提示。
+  跨 `major.minor` 时插件可能被启动时拒装,需在插件管理器逐个授予精确版本豁免。
+  版本一号都取不到时(既没有 `dsh-runtimes` 也没有 `dsh` 命令)如实报「需人工确认」,不猜。
 - **工作区代码不在 `$DSH_HOME` 内**:会话 cwd 指向的是项目目录(独立仓库)。
   目标机没有那些目录时,会话能列出但打不开 —— I8 会把缺失的目录逐个报出来。
   要用同一批历史,需把这些仓库也拷过去,或用 `mappings` 指到目标机上已有的等价目录。
@@ -225,7 +236,7 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 69 个测试:纯函数 + zstd 帧 + 会话迁移 + 全链路 export→apply→verify
+npm test        # 86 个测试:纯函数 + zstd 帧 + 会话迁移 + 宿主运行时指纹 + 全链路 export→apply→verify
 npm run verify
 ```
 
