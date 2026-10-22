@@ -218,13 +218,21 @@ Two ways, pick one.
 On the source, after exporting, serve the bundle:
 
 ```
-dshsync_lan_host(bundleDir="D:/dsh-bundle")
+dshsync_lan_host()                     # bundleDir defaults to the configured output directory
+dshsync_lan_host(bundleDir="D:/other") # or name it explicitly
 ```
 
 It prints a 6-digit pairing code and a live progress page (`http://<source-ip>:38473/`), then **returns
 immediately** — the service keeps running in the background, so the conversation is not blocked for minutes.
 
-On the new machine:
+On the new machine, **either** — both run the same execution path (`lib/lan/pull-runner.js`) and differ
+only in how the result is presented:
+
+- **Click it in the card** (recommended): Settings → Built-in plugins → dsh-sync migration → Devices on
+  this network (**opening the card already broadcast once**; press Scan only if that found nothing) → click
+  one → Start the migration (pairing code, receive-into, project root) → press Start. Progress, the result
+  and the **next steps after landing** (the important one being: restart dsh) appear right there.
+- **Say it in the chat**: `dshsync_lan_pull(deviceId="1", code="123456", destDir="...", workspaceRoot="E:/code")`
 
 ```
 dshsync_lan_pull(host="192.168.1.23", code="123456",
@@ -245,9 +253,32 @@ makes resuming work).
 **Interrupted? Just run the same command again** — files already received with a matching hash are skipped.
 Measured on loopback: 2516 files / 172 MB in 11 s (15.6 MB/s); the resume pass transferred 0 bytes.
 
-Don't know the source IP? Run `dshsync_lan_discover()` on the new machine first: UDP broadcast (about a
-second), falling back to a per-address scan (about three seconds) when broadcast is blocked, and it tells you
-which layer blocked it.
+Don't know the source IP? **Pick the machine first, then migrate** — two ways, sharing one piece of
+selection state:
+
+- **Click it in the card**: Settings → Built-in plugins → dsh-sync migration → "Devices on this network".
+  Opening the card broadcasts once (about a second); **a list of exactly one is auto-selected** and marked
+  as such on screen. Press Scan for the full sweep when the broadcast found nothing.
+- **Use its index in the chat**: `dshsync_lan_discover()` lists every machine serving a bundle, each with a
+  stable `id` and a 1-based index (UDP broadcast, about a second; falls back to a per-address scan, about
+  three seconds, when broadcast is blocked — and it says which layer blocked it). Then
+  `dshsync_lan_pull(deviceId="1", …)`.
+
+```text
+dshsync_lan_discover()                      # → #1 OLD-PC@192.168.1.5:38473 …
+dshsync_lan_pull(deviceId="1", code="123456",
+                 destDir="D:/incoming/dsh-sync-bundle", workspaceRoot="E:/code")
+```
+
+`deviceId` accepts an id, an index, an alias or an IP. With neither `host` nor `deviceId`, the device
+selected in the card is used. **When nothing has been selected it reports that and lists the three ways to
+choose — it never picks for you**, because sending a bundle to the wrong host is not recoverable. The one
+exception is a list of exactly one machine you have not chosen from yet: that is auto-selected and labelled
+as such, since there is nothing to choose between. An existing selection is never overwritten — if the
+source stops serving it is flagged "no longer in the latest list" rather than silently re-pointed at
+another machine. The selection lives in memory only: scan again after a DSH restart.
+
+Only machines **already serving a bundle** appear, so every entry in the list can actually send.
 
 **B. Copy it manually**
 
@@ -323,25 +354,49 @@ instead of quietly passing.
 | `dshsync_export` | Source | Export the bundle. The source is **read-only** (copy only, never modifies config) |
 | `dshsync_apply` | Target | Land it + workspace unpack + path remapping + session rewrite + symlink rebuild. Supports `dryRun` |
 | `dshsync_verify` | Target | Verify consistency, item by item |
-| `dshsync_lan_host` | Source | Serve the bundle over the LAN; prints the pairing code and progress page. `action="renew"` reissues a code, `action="stop"` shuts it down |
-| `dshsync_lan_discover` | Target | Find machines serving a bundle. UDP broadcast first, per-address scan as fallback |
-| `dshsync_lan_pull` | Target | Pair → wait for the click → receive → apply → verify, one command. Runs in the background, returns a jobId |
+| `dshsync_lan_host` | Source | Serve the bundle over the LAN; prints the pairing code and progress page. `bundleDir` defaults to the configured output directory. `action="renew"` reissues a code, `action="stop"` shuts it down |
+| `dshsync_lan_discover` | Target | Find machines serving a bundle. UDP broadcast first, per-address scan as fallback. Results carry an `id` and an index, and are remembered |
+| `dshsync_lan_pull` | Target | Pair → wait for the click → receive → apply → verify, one command. Takes `deviceId`, or falls back to the machine selected in the card. Runs in the background, returns a jobId |
 | `dshsync_lan_status` | Both | Progress, speed, ETA, and the final apply/verify report |
 
 ## Configuration (settings namespace `sync`)
 
+Edit these in **Settings → Built-in plugins → dsh-sync migration**. The top half of that card holds the
+four fields marked editable; below that are the read-only **machine status** (session / workspace / skill
+counts, the bundle currently in the output directory, the LAN host and its jobs) and **LAN devices + start
+the migration** (opening the card broadcasts once → click one → fill in the pairing code and the two paths
+→ press start → watch the progress, the result and what to do next). The whole move can be done inside
+Settings, without going back to the chat.
+
 | Key | Default | Description |
 |---|---|---|
 | `dshHome` | `$DSH_HOME` or `~/.dsh` | Harness home (on the target too, so you can place it anywhere) |
-| `profile` | `web` | Profile to export by default; `"*"` = all |
-| `outDir` | temp dir `dsh-sync-bundle` | Bundle output directory |
-| `includeCredentials` | `false` | Whether to include `.credentials.yaml` (real secrets) |
-| `credentialPassphrase` | empty | ≥6 chars: move settings + credentials **encrypted** (recommended) |
-| `includePlugins` | `true` | Whether to vendor the source of `link:` plugins |
-| `includeState` | `true` | Whether to carry sessions / storages / skills (turn it off and you get a usable-but-empty environment) |
+| `profile` | `*` | Profile to export by default; `"*"` = all. **Editable** |
+| `outDir` | temp dir `dsh-sync-bundle` | Bundle output directory. **Editable** |
+| `includePlugins` | `true` | Whether to vendor the source of `link:` plugins. **Editable** |
+| `includeState` | `true` | Whether to carry sessions / storages / skills (turn it off and you get a usable-but-empty environment). **Editable** |
+| `includeCredentials` | `false` | Whether to include `.credentials.yaml` (real secrets). **Deliberately not editable**, argument only |
+| `credentialPassphrase` | empty | ≥6 chars: move settings + credentials **encrypted** (recommended). **Deliberately not editable**, argument only |
 | `includeWorkspaces` | `false` | Package the project directories sessions point at. Turn it on for a machine switch |
 | `includeGit` | `true` | Keep `.git` inside packaged workspaces (complete repositories); off only to save size |
 | `workspaceRoot` | empty | On the **target**: the project root that decides where everything lands |
+
+The last two fields stay out of the card on purpose: the first would bundle plain-text secrets in one
+click, the second would be written into `settings.yaml` in the clear. Both still work as per-call tool
+arguments.
+
+### Why this card is hand-written
+
+Host-side auto-generated settings pages are not a thing yet: `dsh-settings` 0.2.x says `autoGenerate`
+defaults to on, but **"no shipped client does so yet"**. A plugin that only exports `Config` therefore
+shows no card at all, so this package ships a hand-written `client.js` (single-file IIFE, no build
+chain) that registers a `settings.plugins.tab` contribution: configuration through the shared
+`configForms`, read-only status through the host's authenticated `/api/dsh-sync/overview`.
+
+If the status route cannot be mounted (older host without `connection.fetch.register`) the card degrades
+to configuration only; if the shared form is unavailable it degrades to status only. Neither failure
+takes the other down.
+
 
 ## Credential strategy (important)
 
@@ -416,7 +471,7 @@ blocked.
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 152 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + full export→apply→verify
+npm test        # 209 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + device selection + full export→apply→verify
 npm run verify
 ```
 

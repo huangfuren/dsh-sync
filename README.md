@@ -230,19 +230,21 @@ dsh-sync-bundle/
 源机导出完成后起一个发送端:
 
 ```
-dshsync_lan_host(bundleDir="D:/dsh-bundle")
+dshsync_lan_host()                     # bundleDir 缺省取配置里的「输出目录」(= 导出时的落点)
+dshsync_lan_host(bundleDir="D:/其它")  # 也可以显式指定
 ```
 
 它打印 6 位配对码和进度页地址(`http://<源机IP>:38473/`),然后**立即返回** —— 服务在后台跑,
 对话不会被卡十几分钟。
 
-新机器上:
+新机器上**两种发起方式,任选**:
 
-```
-dshsync_lan_pull(host="192.168.1.23", code="123456",
-                 destDir="D:/incoming/dsh-sync-bundle",
-                 workspaceRoot="E:/code")
-```
+- **卡片里点(推荐)**:设置 → 内置插件 → dsh-sync 迁移 → 局域网设备(**展开卡片时已经广播过一次**,
+  没找到再点「扫描」全量找)→ 点选一台 → 开始迁移(填配对码、收到哪、项目代码落到)→ 点「开始迁移」。
+  之后卡片里直接看进度与结果,**完成后还会列出落地后的下一步(最重要的一条是重启 dsh)**,不用回对话。
+- **对话里说**:`dshsync_lan_pull(deviceId="1", code="123456", destDir="...", workspaceRoot="E:/code")`
+
+两条路走的是**同一份执行逻辑**(`lib/lan/pull-runner.js`),只是结果呈现不同。
 
 它负责:配对 → 等你在**源机页面**上点「接受」→ 逐文件接收并核对 sha256 → 自动 `apply` → 自动 `verify`。
 全程后台执行,进度页在 `http://127.0.0.1:38474/`,`dshsync_lan_status(jobId="...")` 随时查。
@@ -254,8 +256,27 @@ dshsync_lan_pull(host="192.168.1.23", code="123456",
 **中断了直接重跑同一条命令即可**,已收到且哈希一致的文件自动跳过。实测 2516 个文件 / 172 MB 走回环
 11 秒(15.6 MB/s),续传实传 0 字节。
 
-不知道源机 IP 时,在新机器上先 `dshsync_lan_discover()`:先发 UDP 广播(约 1 秒),广播被防火墙拦了
-就自动改成逐个地址扫描(约 3 秒),并把「是哪一层挡住的」讲清楚。
+不知道源机 IP 时,**先选中设备,再迁移** —— 两种方式任选,共用同一份选中状态:
+
+- **在卡片里点选**:设置 → 内置插件 → dsh-sync 迁移 → 「局域网设备」。展开卡片即广播一次(约 1 秒),
+  **只找到一台会自动选中**(界面上标注「只找到这一台,已自动选中」);找到多台就点一台。
+- **在对话里用序号**:`dshsync_lan_discover()` 列出所有开着发送端的机器,每台带稳定 `id` 和 1 基序号
+  (先发 UDP 广播约 1 秒,被防火墙拦了就自动改成逐个地址扫描约 3 秒,并把「是哪一层挡住的」讲清楚),
+  然后 `dshsync_lan_pull(deviceId="1", …)`。
+
+```
+dshsync_lan_discover()                      # → #1 OLD-PC@192.168.1.5:38473 …
+dshsync_lan_pull(deviceId="1", code="123456",
+                 destDir="D:/incoming/dsh-sync-bundle", workspaceRoot="E:/code")
+```
+
+`deviceId` 认 id / 序号 / 别名 / IP 四种写法;`host` 与 `deviceId` 都不给时,用卡片里选中的那台。
+**一个都没选过就报错并说清三条路,不会替你挑** —— 把 bundle 传给错的一方不可挽回。唯一的例外是
+「只发现一台、且你还没选过」,这时自动选中并在界面上标出来(没有可比的对象,也就没有选错的可能);
+**已经选过就绝不自动改选**,对方关掉发送端时它标成「已不在最新列表」而不是静默换一台。
+选中状态只在内存里:重启 DSH 后重新扫描一次即可。
+
+列表里只出现**已开启发送端**的机器,所以每一台都是真能传的。
 
 **B. 手动拷**
 
@@ -327,25 +348,45 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 | `dshsync_export` | 源机 | 导出 bundle。源机**只读**(只复制,从不改配置) |
 | `dshsync_apply` | 目标机 | 落地 + 工作区解包 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun` |
 | `dshsync_verify` | 目标机 | 逐条核对一致性 |
-| `dshsync_lan_host` | 源机 | 起局域网发送端,给出配对码与进度页。`action="renew"` 换码、`action="stop"` 关停 |
-| `dshsync_lan_discover` | 目标机 | 找局域网里开着的发送端。UDP 广播优先,逐地址扫描兜底 |
-| `dshsync_lan_pull` | 目标机 | 配对 → 等确认 → 接收 → 落地 → 核验,一条命令。后台执行,立即返回 jobId |
+| `dshsync_lan_host` | 源机 | 起局域网发送端,给出配对码与进度页。`bundleDir` 缺省取配置的输出目录。`action="renew"` 换码、`action="stop"` 关停 |
+| `dshsync_lan_discover` | 目标机 | 找局域网里开着的发送端。UDP 广播优先,逐地址扫描兜底。结果带 `id` 与序号,会被记住 |
+| `dshsync_lan_pull` | 目标机 | 配对 → 等确认 → 接收 → 落地 → 核验,一条命令。可用 `deviceId` 指定(或用卡片里选中的那台)。后台执行,立即返回 jobId |
 | `dshsync_lan_status` | 两端 | 查进度、速率、剩余时间,以及落地与核验的最终结果 |
 
 ## 配置(settings 命名空间 `sync`)
 
+设置在 **设置 → 内置插件 → dsh-sync 迁移** 这张卡片里改。卡片上半是下面标了「可编辑」的四项，
+下半两块：只读的**本机状态**（会话 / 工作区 / skills 数量、默认输出目录里的 bundle、局域网发送端与任务），
+以及**局域网设备 + 开始迁移**（展开即广播一次 → 点选一台 → 填配对码与两个路径 → 点开始 → 看进度、
+结果与「接下来」）。整趟迁移可以在设置页里完成，不用回对话。
+
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `dshHome` | `$DSH_HOME` 或 `~/.dsh` | harness home |
-| `profile` | `web` | 默认导出的 profile;`"*"` = 全部 |
-| `outDir` | 临时目录 `dsh-sync-bundle` | bundle 输出目录 |
-| `includeCredentials` | `false` | 是否带 `.credentials.yaml`(真实密钥) |
-| `credentialPassphrase` | 空 | ≥6 位:把 settings + 凭据**加密**搬运(推荐) |
-| `includePlugins` | `true` | 是否 vendoring `link:` 插件源码 |
-| `includeState` | `true` | 是否带 sessions / storages / skills(关掉就只是"能用的空环境") |
+| `profile` | `*` | 默认导出的 profile;`"*"` = 全部。**可编辑** |
+| `outDir` | 临时目录 `dsh-sync-bundle` | bundle 输出目录。**可编辑** |
+| `includePlugins` | `true` | 是否 vendoring `link:` 插件源码。**可编辑** |
+| `includeState` | `true` | 是否带 sessions / storages / skills(关掉就只是"能用的空环境")。**可编辑** |
+| `includeCredentials` | `false` | 是否带 `.credentials.yaml`(真实密钥)。**故意不可编辑**,只能按次传参 |
+| `credentialPassphrase` | 空 | ≥6 位:把 settings + 凭据**加密**搬运(推荐)。**故意不可编辑**,只能按次传参 |
 | `includeWorkspaces` | `false` | 是否把会话的项目目录一起打包。换机自用建议打开 |
 | `includeGit` | `true` | 打包工作区时保留 `.git`（完整仓库）；关掉只为省体积 |
 | `workspaceRoot` | 空 | **目标机**上的项目根目录，落地时用它决定一切落位 |
+
+后两项（`includeCredentials` / `credentialPassphrase`）不在卡片里是有意的：前者一键把明文凭据打进
+bundle，后者若进表单就会明文落在 `settings.yaml` 里。它们仍然可以用工具参数按次传入。
+
+### 为什么卡片要自己写
+
+宿主从插件的 `Config` schema 自动生成设置页这件事，0.2.x 的 `dsh-settings` 写得很清楚：
+`autoGenerate` 默认开，**但「no shipped client does so yet」** —— 没有任何客户端实现自动页。
+所以只导出 `Config` 的插件在设置里不会出现任何卡片，只能自己注册一个 `settings.plugins.tab`。
+本包因此带一个手写的 `client.js`（单文件 IIFE，不用构建链）：
+配置走 `configForms` 共享表单，只读状态走宿主已认证的 `/api/dsh-sync/overview`。
+
+状态通道挂不上（旧宿主没有 `connection.fetch.register`）时，卡片退化成「只有配置区」；
+配置表单不可用时，卡片退化成「只读状态」。两边互不连累。
+
 
 ## 密钥策略(重要)
 
@@ -420,7 +461,7 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 152 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 局域网直传 + 全链路 export→apply→verify
+npm test        # 209 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 局域网直传 + 设备选中 + 全链路 export→apply→verify
 npm run verify
 ```
 

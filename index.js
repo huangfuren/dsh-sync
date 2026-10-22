@@ -12,6 +12,8 @@ import { defineLanHostTool } from './lib/tools/lan-host.js'
 import { defineLanPullTool } from './lib/tools/lan-pull.js'
 import { defineLanStatusTool } from './lib/tools/lan-status.js'
 import { defineLanDiscoverTool } from './lib/tools/lan-discover.js'
+import { registerMigrateRoute } from './lib/migrate.js'
+import { registerDevicesRoute, registerOverviewRoute } from './lib/status.js'
 
 export const name = 'sync'
 export const inject = ['tools', 'systemPrompt']
@@ -145,12 +147,33 @@ transfer is caught, never applied.
 Four tools cover the transfer itself:
 1. \`dshsync_lan_host\` — on the **source**, after export. Prints a 6-digit pairing code and the URL of a
    live progress page, then returns; the service keeps running in the background. \`action="renew"\` issues
-   a fresh code, \`action="stop"\` shuts it down.
+   a fresh code, \`action="stop"\` shuts it down. \`bundleDir\` defaults to the configured output directory
+   (that is exactly where \`dshsync_export\` wrote it), so in the normal flow it needs no argument at all.
 2. \`dshsync_lan_discover\` — on the **target**, when the source IP is unknown. UDP broadcast first (about a
    second), per-address scan as fallback (about three seconds) for when broadcast is blocked.
 3. \`dshsync_lan_pull\` — on the **target**. Pairs, waits for the human click, streams the files, then runs
    apply + verify. Returns a jobId immediately; the transfer continues in the background.
 4. \`dshsync_lan_status\` — either side. Progress, speed, ETA, and the final apply/verify report.
+
+**Pick the machine before you move anything.** \`dshsync_lan_discover\` lists every machine currently
+serving a bundle, and each entry carries a stable \`id\` plus a 1-based index. Select one of two ways:
+click it in the settings card (设置 → 内置插件 → dsh-sync 迁移 → 局域网设备 → 扫描 → 点选), or pass
+\`deviceId\` to \`dshsync_lan_pull\` — id, index, alias and IP are all accepted. With neither \`host\` nor
+\`deviceId\`, the pull falls back to whatever is selected in the card. When nothing has been selected it
+says so and lists what is available; it never picks a machine for you — sending a bundle to the wrong
+host is not a recoverable mistake. The one exception is a list of exactly one machine that you have not
+chosen from yet: that is auto-selected and marked as such on screen, because there is nothing to choose
+between. An existing selection is never overwritten — if a later scan no longer contains it, it is
+reported as stale and you scan again. The selection lives in memory only, so after a restart the list is
+empty until you scan again. Opening the card already broadcasts once (about a second, no per-address
+scan); press 扫描 only when that found nothing.
+
+Starting the move takes the same two shapes: either press start **in that same card** (pairing code,
+where to receive it, where the project code should land — the receive directory is prefilled), or call
+\`dshsync_lan_pull\`. Both run the identical code path, so a transfer started from the card behaves exactly
+like one started from the conversation; only the presentation differs (a progress bar and result rows
+versus a block of text). Whichever way it starts, nothing moves until a human clicks accept on the source
+machine's page.
 
 Two properties are deliberate and must not be relaxed:
 - **The pairing code is not authorization.** Knowing the code is not enough: the transfer starts only when
@@ -200,17 +223,41 @@ function defaultOutDir() {
   return path.join(os.tmpdir(), 'dsh-sync-bundle')
 }
 
-// dsh 0.2.0：宿主从 Config schema 自动生成设置卡片，只有标 .volatile() 的字段会进表单。
-// ⚠️ volatile 字段递交到插件时是 Volatile<T> 包装，必须 .get() 取值（见下方 readValue）。
-// dshProfileDir 类「用户几乎不改」的路径字段不进表单，故不标 volatile。
+/**
+ * 空串回退到计算默认。实机验证过的坑：宿主把 Config 的 schema 默认值（''）一并传进 apply 的
+ * config，`...config` 展开后会把 entryConfig 里算好的 dshHome/outDir 盖成空串 ——
+ * 卡片上「状态层 / dsh / 输出目录」全部显示「—」，工具层则直接抛 cannot resolve $DSH_HOME。
+ * 两个字段的描述本来就写着「Empty = auto」，所以空串回退不是猜语义，是兑现描述。
+ */
+function withAutoFallbacks(values) {
+  const out = { ...values }
+  if (!out.dshHome) out.dshHome = defaultDshHome()
+  if (!out.outDir) out.outDir = defaultOutDir()
+  return out
+}
+
+// Config 在这台宿主上有两个消费者,分工必须看清:
+//   ① 工具默认值 —— getConfig() 每次工具调用时读一遍(所以这些字段全是「偏好字段」);
+//   ② 设置卡片  —— client.js 经 configForms 读写,**只认标了 .volatile() 的字段**。
+// ⚠️ volatile 字段递交到插件时是 Volatile<T> 包装,必须 .get() 取值(见下方 readValue)。
+//
+// 为什么宿主的 autoGenerate 靠不住:0.2.1-rc.2 的 dsh-settings README 明写
+// 「autoGenerate 默认开,for clients that build pages from the schema; no shipped client does so yet」——
+// 没有任何客户端实现自动页。只导出 Config 的插件在设置里**不会**出现任何卡片,
+// 这就是本包必须自带 client.js 的原因。
+//
+// 两个字段**故意不标 volatile**:
+//   · includeCredentials —— 一键把明文凭据打进 bundle,不该是界面上顺手一点的事;
+//   · credentialPassphrase —— 口令一旦进表单就会明文落在 settings.yaml 里。
+// 不标 volatile = 宿主不服务、任何表单都改不到;仍可用工具参数按次传入。
 export const Config = Schema.object({
   dshHome: Schema.string().default('').volatile().description('Source $DSH_HOME. Empty = $DSH_HOME env or ~/.dsh.'),
   profile: Schema.string().default('*').volatile().description('Profile to export. "*" = every profile (default).'),
   outDir: Schema.string().default('').volatile().description('Default bundle output directory. Empty = temp/dsh-sync-bundle.'),
-  includeCredentials: Schema.boolean().default(false).volatile().description('Include .credentials.yaml (real secrets). Off by default.'),
+  includeCredentials: Schema.boolean().default(false).description('Include .credentials.yaml (real secrets). Off by default, tool argument only.'),
   includePlugins: Schema.boolean().default(true).volatile().description('Vendor link: plugin sources into the bundle.'),
   includeState: Schema.boolean().default(true).volatile().description('Carry sessions / storages / skills so the target becomes identical, not just usable.'),
-  credentialPassphrase: Schema.string().default('').volatile().description('>= 6 chars: encrypt settings + credentials instead of shipping them in the clear.'),
+  credentialPassphrase: Schema.string().default('').description('>= 6 chars: encrypt settings + credentials instead of shipping them in the clear. Tool argument only.'),
 })
 
 export function apply(ctx, config = {}) {
@@ -251,7 +298,40 @@ export function apply(ctx, config = {}) {
   const getConfig = () => {
     const out = {}
     for (const k of Object.keys(entryConfig)) out[k] = readValue(entryConfig[k])
-    return out
+    return withAutoFallbacks(out)
+  }
+
+  // 设置卡片的只读状态通道。宿主把自己已经认证过的 /api 围栏开放给插件,
+  // 卡片按需拉一次「本机状态 + 传输状态」—— 不把状态塞进任何投影,也不自己起 HTTP 服务。
+  // 挂不上不是错误:卡片退化成「只有配置区」,配置照常可改。
+  try {
+    ctx.inject(['connection'], (c) => {
+      let connection
+      try {
+        connection = typeof c.get === 'function' ? c.get('connection') : undefined
+      } catch {
+        connection = undefined
+      }
+      try {
+        if (!registerOverviewRoute(c, connection, getConfig)) {
+          report(ctx, 'connection.fetch.register unavailable; settings card shows configuration only')
+        }
+        // 设备端点（扫描 / 选中）挂不上时，卡片退化成「本机状态可用、设备列表不可用」，
+        // 不连累上面那条：三条路由各自能挂就挂。
+        if (!registerDevicesRoute(c, connection)) {
+          report(ctx, 'settings card devices route not registered')
+        }
+        // 卡片上的「开始迁移」走这条。挂不上只是不能在界面上发起，
+        // 对话里的 dshsync_lan_pull 完全不受影响。
+        if (!registerMigrateRoute(c, connection, getConfig)) {
+          report(ctx, 'settings card migrate route not registered')
+        }
+      } catch (err) {
+        report(ctx, 'settings card routes not registered', err)
+      }
+    })
+  } catch (err) {
+    report(ctx, 'connection injection unavailable; settings card shows configuration only', err)
   }
 
   try {
@@ -294,5 +374,6 @@ export function apply(ctx, config = {}) {
 export const internals = Object.freeze({
   defaultDshHome,
   defaultOutDir,
+  withAutoFallbacks,
   SETTINGS_NAMESPACE,
 })
