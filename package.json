@@ -1,14 +1,14 @@
 {
   "name": "dsh-sync",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "把整台机器的 dsh 状态迁移到另一台机器:导出可移植 bundle(settings / 凭据(可选) / 插件源码 / profile 清单 / 会话历史 / 工作区记录 / skills 链接),在目标机落地并按路径映射改写会话 cwd 与工作区路径,最后逐条核对一致性。会话改写只换 zstd 首帧,事件区逐字节不动。",
   "type": "module",
   "main": "index.js",
   "license": "MIT",
   "author": "huangfuren",
   "scripts": {
-    "check": "node --check index.js && node --check lib/constants.js && node --check lib/bundle.js && node --check lib/checksum.js && node --check lib/crypto.js && node --check lib/apply-script.js && node --check lib/path-map.js && node --check lib/zstd-frame.js && node --check lib/session-migrate.js && node --check lib/host-env.js && node --check lib/link-scan.js && node --check lib/apply-engine.js && node --check lib/verify-engine.js && node --check lib/target/dsync-helper.mjs && node --check lib/tools/export.js && node --check lib/tools/apply.js && node --check lib/tools/verify.js && node --check scripts/export-cli.mjs",
-    "test": "node --test test/bundle.test.js test/state.test.js test/host-env.test.js",
+    "check": "node --check index.js && node --check lib/constants.js && node --check lib/bundle.js && node --check lib/checksum.js && node --check lib/crypto.js && node --check lib/apply-script.js && node --check lib/path-map.js && node --check lib/zstd-frame.js && node --check lib/session-migrate.js && node --check lib/host-env.js && node --check lib/workspace-pack.js && node --check lib/link-scan.js && node --check lib/apply-engine.js && node --check lib/verify-engine.js && node --check lib/target/dsync-helper.mjs && node --check lib/tools/export.js && node --check lib/tools/apply.js && node --check lib/tools/verify.js && node --check scripts/export-cli.mjs",
+    "test": "node --test test/bundle.test.js test/state.test.js test/host-env.test.js test/workspace.test.js",
     "verify": "npm run check && npm test",
     "prepack": "npm run verify"
   },

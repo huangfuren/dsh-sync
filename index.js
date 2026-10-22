@@ -19,12 +19,17 @@ const GUIDANCE = `## Migrate an entire dsh installation between machines (dsh-sy
 Three tools form one pipeline: **export on the source → carry the bundle → apply + verify on the target.**
 
 ### What "migrated" means here
-Two layers, and you need both:
+Three layers. The first two are on by default; the third is opt-in and you usually need it too:
 - **Declaration layer** — settings.yaml, optional credentials, each profile's declaration files, and the
   SOURCE of every \`link:\` plugin. This is what makes the target machine *work*.
 - **State layer** — \`sessions/\`, \`storages/\`, \`skills/\`. This is what makes the target machine
   *identical*: same history, same workspace list, same skill links. Without it you get a working but
   empty environment.
+- **Workspace layer** — the project directories the sessions point at. Opt in with
+  \`includeWorkspaces=true\`. Without it every session opens onto a path that does not exist.
+
+"State copied but projects missing" is the classic half-migration: history, workspace list and skill
+links all verify green, then clicking any session opens an empty editor.
 
 Machine-bound artifacts are deliberately excluded because they must be rebuilt, not copied:
 \`node_modules\`, \`dsh-runtimes\`, \`cache\`, \`logs\`, \`.anonymous-user-id\`.
@@ -48,11 +53,25 @@ first match wins**, and a match must fall on a path-segment boundary (\`D:/deep\
 \`D:/deepseek/...\`). Do not invent a "longest prefix wins" rule — overlapping rules would then resolve
 differently from the order the user wrote. When two machines use identical layouts, omit mappings entirely.
 
+### Project directories
+Pick roots, not drives. The candidate list comes from two places — the \`cwd\` of every session and
+\`storages/workspace.json\` — and nested paths are deduplicated up to the shallowest root, so 8 references
+can collapse to 5 roots. Never "copy drive D:".
+
+Landing is decided by ONE argument, \`workspaceRoot\`: each project is expanded under it by its own name,
+giving \`<workspaceRoot>/<name>\`. Pass \`workspaceMap={"<name>":"<abs path>"}\` to override an individual
+project. The destination paths are then **derived** into the mapping set, ahead of any hand-written
+\`mappings\` — the sessions, the workspace list and the external symlinks all have to point at wherever
+the code actually landed. Get that order backwards and you get the same half-migration as above.
+\`gitMode\` is reported per project (\`repo\` = itself a repo, \`multi\` = a container of repos such as
+\`mine/\` holding 9, \`none\`), and \`includeGit\` decides whether \`.git\` travels.
+
 ### Link handling
 Symlinks are **not** copied as entities. They are recorded in \`state/links.json\` and rebuilt on the
 target, because bundling links into an archive loses them (zip/tar/chat apps flatten or drop them).
-Links pointing outside \`$DSH_HOME\` are rebuilt only if that target exists; otherwise they are reported
-as broken rather than silently retargeted.
+Links pointing outside \`$DSH_HOME\` go through the same mapping set, so a skill linked at the project
+source follows the project to its new location; if no rule matches and the original target does not
+exist, the link is reported as broken rather than silently retargeted.
 
 ### The three tools
 1. \`dshsync_export\` — on the source. \`preview=true\` first (scans, writes nothing). Use \`profile="*"\`.
@@ -63,7 +82,8 @@ as broken rather than silently retargeted.
    folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
    had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
    presence, workspace directories actually existing on the target, profile \`link:\` resolvability and
-   \`node_modules\` state, state-part coverage, and **host runtime agreement**.
+   \`node_modules\` state, state-part coverage, **host runtime agreement**, and **packaged project
+   directories having landed** (pass \`workspaceRoot\` to check that last one).
    Treat a FAIL as "dsh will not see that part of the state".
 
 ### Host version (the failure that hides from every file check)

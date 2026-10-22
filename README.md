@@ -5,12 +5,13 @@
 把**整台机器的 dsh 状态**搬到另一台机器 —— 换机后新机不只是"能跑",而是**跟旧机一样**:
 同样的设置、同样的插件、同样的历史会话、同样的工作区列表、同样的 skills 链接。
 
-分两层,缺一层都不是"一致":
+分三层,缺一层都不是"一致":
 
 | 层 | 内容 | 缺了会怎样 |
 |---|---|---|
 | **声明层** | `settings.yaml`、凭据(可选)、home 级 `cordis.patch.yml`、`AGENTS.md`、每个 profile 的 `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-workspace.yaml` / `.dsh-market/state.json`(插件停用清单、自建分组、市场区域)、每个 `link:` 插件的源码 | dsh 起不来 / **插件全丢** / 插件停用与分组状态回到默认 / agent 行为与旧机不同 |
 | **状态层** | `sessions/`、`storages/`、`skills/`、`attachments/`、`background/`、`dsh-market/`、`llm-deepseek/` | dsh 能跑,但**历史会话全空、工作区列表空、skills 空、附件与背景图全没** |
+| **工作区层** | 会话真正打开的那些项目目录(`includeWorkspaces`,默认**不**带) | 会话能列出来、点开是**空目录** —— 会话 cwd 指向的是 `$DSH_HOME` 之外的项目目录 |
 
 其中 `profiles/<n>/package.json` 是「插件情况」的真相:它同时决定装什么(`dependencies`)与
 实际加载什么(`dsh.profile.bundles`)。**它必须带走**,否则插件源码躺在 `plugins/` 里也没有东西去加载;
@@ -24,12 +25,47 @@
 
 | 方式 | 需要目标机装 dsh-sync | 能做到 |
 |---|---|---|
-| `apply.ps1` / `apply.sh`(bundle 自带) | **不需要** | 声明层落地 + 整包校验 + 备份 + 回滚 |
-| `dshsync_apply` 工具 | 需要 | 上面全部 **+ 路径重映射 + 会话 cwd 改写 + 工作区路径改写 + 软链重建** |
+| `apply.ps1` / `apply.sh`(bundle 自带) | **不需要** | 声明层 + 状态层落地 + 整包校验 + 备份 + 回滚。**不解包工作区代码** |
+| `dshsync_apply` 工具 | 需要 | 上面全部 **+ 工作区代码解包 + 路径重映射 + 会话 cwd 改写 + 工作区路径改写 + 软链重建** |
 | `dshsync_verify` 工具 | 需要 | 逐条核对目标机是否真的与源机一致 |
 
 脚本做不了后两项:改写会话需要 **zstd 帧级读写**,PowerShell 里没有现成能力。
 两条路径共用同一套映射口径(`lib/path-map.js`),不会出现"脚本改一种、工具改另一种"。
+
+## 工作区代码怎么搬
+
+会话的 cwd 指向的是 `$DSH_HOME` **之外**的项目目录（`D://deepseek//dsh-chat` 这种）。
+只搬 `.dsh` 时，这些会话在目标机上能列出来，点开是空的 —— 换机不算成功。
+
+打开 `includeWorkspaces` 后按**根**打包：
+
+| 事实 | 本机实测 |
+|---|---|
+| 会话 cwd 条数 | 8 |
+| 去嵌套后的根 | **5**（`D://a` 与 `D://a//b` 只搬一次） |
+| `D://deepseek` 整盘 | 5.4G（大部分是 DSH 源码检出与临时目录，与换机无关） |
+| 真正被引用的 5 个根 | 净 1.18G |
+
+规则只有三条：
+
+1. **按根搬，不按盘搬** —— 候选来自会话 cwd 与 `storages/workspace.json` 两处，去嵌套后才是根。
+2. **默认带 `.git`**，必排 `node_modules` —— 目标机上仓库是完整的，能 `git log` / `git pull`；
+   依赖重装一次即可。容器目录里是多个子仓库（`dsh-plugin/mine/` 下 9 个）时也能认出来。
+3. **落位只要一个参数** —— `workspaceRoot` 是你在新机器上选的根目录，目录名保持不变：
+
+```
+dshsync_apply(bundleDir="<bundle>", workspaceRoot="E:/code", dryRun=true)
+```
+
+会话 cwd、`workspace.json` 里的工作区路径、`skills/` 下指向项目目录的软链，**三者会一起改到
+`workspaceRoot` 下**。想单独放某个项目就用 `workspaceMap={"dsh-chat":"E:/projects/dsh-chat"}`。
+
+为什么落位参数必须压过一个：这三处只要有一处对不上，就是「会话在、内容是空的」。
+所以派生映射排在**手写 `mappings` 之前**；如果你的手写规则与已搬工作区重叠，报告会明确告诉你
+「这条规则对它不生效」，而不是让你以为生效了。
+
+目标机上落位目录已存在且非空时会**拒绝**解包（工作区太大，进不了备份），要覆盖得显式传
+`overwriteWorkspaces=true`。
 
 ## 为什么不能直接复制 `~/.dsh`
 
@@ -78,10 +114,20 @@
 ### 旧电脑:导出
 
 ```
-dshsync_export(profile="*", includeCredentials=true, credentialPassphrase="<你记得住的口令>", preview=true)
+dshsync_export(profile="*", includeWorkspaces=true, includeCredentials=true,
+              credentialPassphrase="<你记得住的口令>", preview=true)
 ```
 
 先 `preview=true` 看一眼(只扫描、不写文件),确认无误后去掉它真跑。
+
+预览会列出**工作区候选**（路径 + 体积 + 是否含 git），按名字或路径勾选：
+
+```
+dshsync_export(profile="*", includeWorkspaces=true, workspaces=["dsh-chat","dsh-plugin"])
+dshsync_export(profile="*", includeWorkspaces=true, workspaces=["*"])   # 全选
+```
+
+不传 `workspaces` 就是全选所有**源机上存在**的候选。`includeGit=false` 可丢掉 `.git` 换体积。
 
 产出 bundle:
 
@@ -105,6 +151,7 @@ dsh-sync-bundle/
     llm-deepseek/        # 模型文件索引
     links.json           # 软链清单:rel → target(迁移时按此重建)
     sessions.json        # 会话索引摘要
+  workspaces/<name>/     # 会话真正打开的项目目录(需 includeWorkspaces;含 .git,不含 node_modules)
   tools/dsync-helper.mjs
   apply.ps1  apply.sh    # 零依赖兜底脚本
   APPLY.md
@@ -121,15 +168,25 @@ dsh-sync-bundle/
 
 ### 新电脑:落地
 
-路径不一致(换了盘符 / 用户名)时必须给映射,否则会话指向不存在的目录:
+**bundle 里带了工作区代码时,一个 `workspaceRoot` 就够了** —— 这是换机推荐的用法:
+
+```
+dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
+              workspaceRoot="E:/code",     # 你在新机器上选的项目根目录
+              dryRun=true)                 # 先预演
+```
+
+会话 cwd、工作区路径、skills 软链会自动改到 `workspaceRoot/<原名>` 下，不用再写映射。
+预演会逐个打印「哪个工作区 → 落到哪」「哪些会话的 cwd 会被改成什么」，确认后再
+`dryRun=false`。
+
+没带工作区代码时（只搬 `.dsh`），路径不一致就给映射，否则会话指向不存在的目录:
 
 ```
 dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
               mappings=[{"from":"D:/deepseek","to":"E:/code"}],
-              dryRun=true)      # 先预演
+              dryRun=true)
 ```
-
-确认预演结果后 `dryRun=false` 真跑。两台机器目录结构完全相同时可省略 `mappings`。
 
 映射规则:**按顺序应用、首条命中即返回、命中必须落在路径段边界**
 (`D:/deep` 不会碰到 `D:/deepseek/...`)。不要自创"最长前缀优先"—— 多条规则重叠时会算出
@@ -141,7 +198,7 @@ dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
 dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 ```
 
-逐条核对 10 项不变量,每项给 PASS / FAIL / WARN:
+逐条核对 12 项不变量,每项给 PASS / FAIL / WARN:
 
 | ID | 核对内容 |
 |---|---|
@@ -152,16 +209,17 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 | I5 | `workspace.json` 路径与会话 cwd 逐字对齐（源机原有的孤立会话只算 WARN，迁移新增的孤立才算 FAIL） |
 | I6 | 软链按清单重建(内部必须成功且可解引用;外部允许缺路径但必须可见) |
 | I7 | vendored 插件源码在 bundle 中完好 |
-| I8 | 会话 cwd 指向的**工作区目录在目标机真的存在**(工作区代码不在 `$DSH_HOME` 内,缺了会话能列出但打不开) |
+| I8 | 会话 cwd 指向的**工作区目录在目标机真的存在**（打开 `includeWorkspaces` 后应当全绿；不打开时缺的会逐个列出，会话能列出但打不开） |
 | I9 | profile 的 `link:` 依赖在目标机可解析;`node_modules` 是否已装 |
 | I10 | 状态层 7 个部分全部落地,文件数与源机一致 |
-| I11 | 宿主运行时一致(dsh 版本 / 平台 / 架构 / node 大版本);版本跨代会让插件被**启动时拒装** |
+| I11 | 宿主运行时一致（dsh 版本 / 平台 / 架构 / node 大版本）；跨 `major.minor` 时插件会被启动时拒装 |
+| I12 | 工作区代码真的落地了（传 `workspaceRoot` 才核对；不传只报 WARN，不猜） |
 
 `FAIL` 的含义是:**这部分状态 dsh 看不到**。不是"可能有点问题",是确定对不上。
 
 I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被工具拦下。但它挡的是最阴的一种失败 ——
 宿主启动时做 peer 兼容性裁决,版本对不上时插件是 `stays installed but startup denies it`:
-文件都在、sha256 全对、I1–I10 全绿,**界面里插件却是空的**。这条提示不给,用户会以为是 dsh-sync 搬丢了东西。
+文件都在、sha256 全对、I1–I12 全绿,**界面里插件却是空的**。这条提示不给,用户会以为是 dsh-sync 搬丢了东西。
 
 版本取不到时不猜:两端任一取不到就报「需人工确认」,不假判 `PASS`。
 
@@ -170,7 +228,7 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 | 工具 | 在哪跑 | 说明 |
 |---|---|---|
 | `dshsync_export` | 源机 | 导出 bundle。源机**只读**(只复制,从不改配置) |
-| `dshsync_apply` | 目标机 | 落地 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun` |
+| `dshsync_apply` | 目标机 | 落地 + 工作区解包 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun` |
 | `dshsync_verify` | 目标机 | 逐条核对一致性 |
 
 ## 配置(settings 命名空间 `sync`)
@@ -184,6 +242,9 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 | `credentialPassphrase` | 空 | ≥6 位:把 settings + 凭据**加密**搬运(推荐) |
 | `includePlugins` | `true` | 是否 vendoring `link:` 插件源码 |
 | `includeState` | `true` | 是否带 sessions / storages / skills(关掉就只是"能用的空环境") |
+| `includeWorkspaces` | `false` | 是否把会话的项目目录一起打包。换机自用建议打开 |
+| `includeGit` | `true` | 打包工作区时保留 `.git`（完整仓库）；关掉只为省体积 |
+| `workspaceRoot` | 空 | **目标机**上的项目根目录，落地时用它决定一切落位 |
 
 ## 密钥策略(重要)
 
@@ -220,9 +281,11 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
   它不是安装包的版本,宿主升级后若没重装运行时就会差一个 patch —— 所以同 `major.minor` 内的差异只作弱提示。
   跨 `major.minor` 时插件可能被启动时拒装,需在插件管理器逐个授予精确版本豁免。
   版本一号都取不到时(既没有 `dsh-runtimes` 也没有 `dsh` 命令)如实报「需人工确认」,不猜。
-- **工作区代码不在 `$DSH_HOME` 内**:会话 cwd 指向的是项目目录(独立仓库)。
-  目标机没有那些目录时,会话能列出但打不开 —— I8 会把缺失的目录逐个报出来。
-  要用同一批历史,需把这些仓库也拷过去,或用 `mappings` 指到目标机上已有的等价目录。
+- **工作区代码默认不进 bundle**:会话 cwd 指向的是 `$DSH_HOME` 之外的项目目录。
+  不打开 `includeWorkspaces` 时它们不会随行,目标机上会话能列出但打不开（I8 逐个报出）。
+  打开后按根打包（默认带 `.git`、排除 `node_modules`），落地用一个 `workspaceRoot` 指到新位置；
+  落位目录已存在且非空时会**拒绝**覆盖，要显式 `overwriteWorkspaces=true`。
+  体积会从百 MB 级涨到 GB 级，先 `preview=true` 看候选与大小再决定勾哪些。
 - **`link:` 依赖已自动改写**:指向 `$DSH_HOME/plugins/<name>` 的相对路径,换位置也成立;
   只有**未 vendoring** 的 `link:`(源码缺失或 `includePlugins=false`)才保留源机路径,并在报告里点出来。
 - **外部软链需要目标机有对应路径**:`skills/` 下指向 `$DSH_HOME` 外部的链接,
@@ -236,7 +299,7 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 86 个测试:纯函数 + zstd 帧 + 会话迁移 + 宿主运行时指纹 + 全链路 export→apply→verify
+npm test        # 110 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 全链路 export→apply→verify
 npm run verify
 ```
 

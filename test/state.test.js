@@ -846,3 +846,77 @@ test('profile 的 .dsh-market/state.json（停用清单 / 分组 / 区域）随�
   assert.deepEqual(JSON.parse(fs.readFileSync(landed, 'utf8')), state)
   fs.rmSync(root, { recursive: true, force: true })
 })
+
+test('apply 遇到「bundle 带工作区代码但没给落位」必须中止，而不是只搬状态', { skip: !HAS_ZSTD }, async () => {
+  // 这是最危险的失败模式：会话 cwd 被改到某个路径、代码却没落地，
+  // 表现是「历史列表正常、点开全是空目录」，而每条检查都能显示通过。
+  const root = tmpDir('ws-abort')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  const projA = path.join(root, 'srcproj', 'alpha')
+
+  fs.mkdirSync(path.join(projA, 'src'), { recursive: true })
+  fs.writeFileSync(path.join(projA, 'src', 'a.js'), 'console.log(1)\n')
+  mkSession(src, projA, 's1')
+  mkWorkspace(src, [['w1', projA]])
+  fs.mkdirSync(path.join(src, 'profiles', 'desktop'), { recursive: true })
+  fs.writeFileSync(path.join(src, 'profiles', 'desktop', 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+  fs.writeFileSync(path.join(src, 'settings.yaml'), 'theme: dark\n')
+  fs.mkdirSync(dst, { recursive: true })
+
+  const { manifest } = await exportBundle({
+    dshHome: src, profiles: ['desktop'], outDir: bundle,
+    includeState: true, includeWorkspaces: true, includeGit: false, onLog: () => {},
+  })
+  assert.equal(manifest.workspaces.length, 1, '导出应带上一个工作区')
+
+  const applied = await applyBundle({ bundleDir: bundle, dshHome: dst, mappings: [], onLog: () => {} })
+  assert.equal(applied.ok, false, '没给落位就必须整体失败')
+  assert.ok(applied.errors.some((e) => /未指定落位/.test(e)), JSON.stringify(applied.errors))
+  assert.ok(!fs.existsSync(path.join(dst, 'sessions')), '中止后不得留下改写过的会话')
+  assert.ok(!fs.existsSync(path.join(dst, 'settings.yaml')), '中止后不得落声明层')
+  assert.ok(!fs.existsSync(path.join(dst, 'storages')), '中止后不得落状态层')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('apply 给了 workspaceRoot 就解包代码，并把会话 cwd 指到新落位', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('ws-land')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  const projA = path.join(root, 'srcproj', 'alpha')
+  const newRoot = path.join(root, 'newhome')
+
+  fs.mkdirSync(path.join(projA, 'src'), { recursive: true })
+  fs.writeFileSync(path.join(projA, 'src', 'a.js'), 'console.log(1)\n')
+  mkSession(src, projA, 's1')
+  mkWorkspace(src, [['w1', projA]])
+  fs.mkdirSync(path.join(src, 'profiles', 'desktop'), { recursive: true })
+  fs.writeFileSync(path.join(src, 'profiles', 'desktop', 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dsh: { profile: { bundles: [] } } }))
+  fs.writeFileSync(path.join(src, 'settings.yaml'), 'theme: dark\n')
+  fs.mkdirSync(dst, { recursive: true })
+
+  await exportBundle({
+    dshHome: src, profiles: ['desktop'], outDir: bundle,
+    includeState: true, includeWorkspaces: true, includeGit: false, onLog: () => {},
+  })
+
+  const dest = path.join(newRoot, 'alpha')
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [], workspaceRoot: newRoot, onLog: () => {},
+  })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  assert.ok(fs.existsSync(path.join(dest, 'src', 'a.js')), '代码应解包到 <workspaceRoot>/<name>')
+
+  // 派生映射必须生效：会话 cwd、目录名都跟着代码走
+  const { header } = readSessionHeader(
+    path.join(dst, 'sessions', encodeSessionDir(dest), 's1', 'session.jsonl.zstd'),
+  )
+  assert.equal(normalizePath(header.cwd), normalizePath(dest))
+  const ws = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'workspace.json'), 'utf8'))
+  assert.equal(normalizePath(ws.tables.workspaces.w1.path), normalizePath(dest))
+  fs.rmSync(root, { recursive: true, force: true })
+})

@@ -4,16 +4,54 @@ English | [中文](README.md)
 
 Move **an entire machine's dsh state** to another machine. After switching, the new machine is not merely "working" — it is **the same as the old one**: same settings, same plugins, same conversation history, same workspace list, same skills links.
 
-Two layers, and missing either one is not "identical":
+Three layers, and missing any of them is not "identical":
 
 | Layer | Contents | What breaks without it |
 |---|---|---|
 | **Declaration layer** | `settings.yaml`, credentials (optional), home-level `cordis.patch.yml`, `AGENTS.md`, each profile's `package.json` / `cordis.patch.yml` / `cordis.yml` / `pnpm-workspace.yaml` / `.dsh-market/state.json` (disabled plugins, custom groups, market region), the source of every `link:` plugin | dsh will not start / **all plugins lost** / disabled-state and grouping reset / agent behaves differently |
 | **State layer** | `sessions/`, `storages/`, `skills/`, `attachments/`, `background/`, `dsh-market/`, `llm-deepseek/` | dsh runs, but **every conversation is gone, workspace list empty, skills empty, attachments and backgrounds gone** |
+| **Workspace layer** | The project directories those sessions actually open (`includeWorkspaces`, **off** by default) | Conversations are listed but open **empty** — the cwd points outside `$DSH_HOME` |
 
 A profile's `package.json` is the truth about "the plugin situation": it decides both what gets installed (`dependencies`) and what actually loads (`dsh.profile.bundles`). It **must** travel — otherwise the plugin sources sit in `plugins/` with nothing to load them. And it cannot be copied verbatim: its `link:` entries are source-machine absolute paths, so export rewrites them to `link:../../plugins/<name>` pointing at the vendored copy, which holds wherever the target puts `$DSH_HOME`.
 
 Rebuildable artifacts are **not** moved (moving them is actively wrong): `node_modules` (reinstalled from `package.json`), `dsh-runtimes` (rebuilt with the host installer), `cache`, `logs`, `.anonymous-user-id`.
+
+## Moving the project directories too
+
+A session's cwd points at a project directory **outside** `$DSH_HOME`. Move only `.dsh` and those
+conversations show up on the target but open empty — not a successful machine switch.
+
+With `includeWorkspaces` they are packaged by **root**:
+
+| Fact | Measured on this machine |
+|---|---|
+| Session cwds | 8 |
+| Roots after collapsing nesting | **5** (`D://a` and `D://a//b` are moved once) |
+| Whole `D://deepseek` tree | 5.4 GB (mostly a DSH source checkout and scratch dirs, irrelevant here) |
+| The 5 roots actually referenced | 1.18 GB net |
+
+Three rules only:
+
+1. **By root, not by drive** — candidates come from session cwds *and* `storages/workspace.json`; nesting collapses first.
+2. **`.git` is kept by default**, `node_modules` is always excluded — repositories stay complete on the target
+   (you can `git log` / `git pull`), and you reinstall dependencies once. Container directories holding several
+   repos (`dsh-plugin/mine/` with 9 of them) are recognised as such.
+3. **Landing takes one parameter** — `workspaceRoot` is the root you pick on the new machine; directory names are preserved:
+
+```
+dshsync_apply(bundleDir="<bundle>", workspaceRoot="E:/code", dryRun=true)
+```
+
+Session cwds, `workspace.json` paths and the `skills/` symlinks pointing into project directories are all
+rewritten to land under `workspaceRoot`. Override a single project with
+`workspaceMap={"dsh-chat":"E:/projects/dsh-chat"}`.
+
+Why the landing rule has to win: if any one of those three disagrees, you get "session exists, content empty".
+So derived mappings are placed **before** your hand-written `mappings`, and if a rule of yours overlaps a
+packaged workspace the report says plainly that the rule does not apply to it.
+
+If the landing directory already exists and is not empty, unpacking is **refused** (workspaces are too large
+to back up); pass `overwriteWorkspaces=true` to force it.
 
 ## Two ways to land the bundle
 
@@ -110,15 +148,26 @@ Through `dsh-localsend`, send the directory tree with `localsend_smb_push`; note
 
 ### New machine: land it
 
-When paths differ (different drive letter or user name) you must supply mappings, otherwise sessions will point at directories that do not exist:
+**When the bundle carries project directories, one `workspaceRoot` is all you need** — the recommended path when switching machines:
+
+```
+dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
+              workspaceRoot="E:/code",     # the project root you pick on this machine
+              dryRun=true)                 # preview first
+```
+
+Session cwds, workspace paths and `skills` symlinks all move to `workspaceRoot/<name>`; no mappings needed.
+The preview prints, item by item, which workspace lands where and which session cwds change — then run with
+`dryRun=false`.
+
+Without packaged workspaces (state only), supply mappings when paths differ, otherwise sessions point at
+directories that do not exist:
 
 ```
 dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
               mappings=[{"from":"D:/deepseek","to":"E:/code"}],
-              dryRun=true)      # preview first
+              dryRun=true)
 ```
-
-Once the preview looks right, run again with `dryRun=false`. When both machines have an identical layout, `mappings` can be omitted.
 
 Mapping rules: **applied in order, first match wins, and a match must fall on a path-segment boundary** (`D:/deep` does not touch `D:/deepseek/...`). Do not invent "longest prefix wins" — with overlapping rules it resolves differently from the order you wrote.
 
@@ -141,9 +190,11 @@ Eleven invariants, each reported PASS / FAIL / WARN:
 | I5 | `workspace.json` paths align verbatim with session cwds (orphans that already existed on the source are only WARN; orphans introduced by the migration are FAIL) |
 | I6 | Symlinks rebuilt from the list (internal must succeed *and* resolve; external may be missing but must be visible) |
 | I7 | Vendored plugin sources are intact in the bundle |
-| I8 | The **workspace directories** behind each session cwd actually exist on the target (workspace code is not inside `$DSH_HOME`; without it sessions list but will not open) |
+| I8 | The **workspace directories** behind each session cwd actually exist on the target (all green once `includeWorkspaces` is used; otherwise each missing one is listed — sessions show up but do not open) |
 | I9 | The profile's `link:` dependencies resolve on the target; whether `node_modules` is installed |
 | I10 | All 7 state parts landed, with file counts matching the source |
+| I11 | Host runtime agreement (dsh version / platform / arch / node major); across `major.minor` the host denies plugins at startup |
+| I12 | Packaged workspaces actually landed (checked only when you pass `workspaceRoot`; otherwise WARN, never a guess) |
 | I11 | Host runtime matches (dsh version / platform / arch / node major). A cross-generation version gap makes plugins **denied at startup** |
 
 `FAIL` means: **dsh cannot see this state.** Not "might be a bit off" — it is definitely out of sync.
@@ -151,7 +202,7 @@ Eleven invariants, each reported PASS / FAIL / WARN:
 I11 is a WARN rather than a FAIL: upgrading dsh while migrating is legitimate and must not be blocked.
 But it guards the nastiest failure of all — the host runs a peer-compatibility ruling at startup, and a
 version mismatch leaves plugins `stays installed but startup denies it`: every file present, every sha256
-correct, I1–I10 green, **and the plugin list empty**. Without this line you would blame dsh-sync for
+correct, I1–I12 green, **and the plugin list empty**. Without this line you would blame dsh-sync for
 losing your plugins.
 
 Versions are never guessed: if either side is unavailable the check says "needs manual confirmation"
@@ -176,6 +227,9 @@ instead of quietly passing.
 | `credentialPassphrase` | empty | ≥6 chars: move settings + credentials **encrypted** (recommended) |
 | `includePlugins` | `true` | Whether to vendor the source of `link:` plugins |
 | `includeState` | `true` | Whether to carry sessions / storages / skills (turn it off and you get a usable-but-empty environment) |
+| `includeWorkspaces` | `false` | Package the project directories sessions point at. Turn it on for a machine switch |
+| `includeGit` | `true` | Keep `.git` inside packaged workspaces (complete repositories); off only to save size |
+| `workspaceRoot` | empty | On the **target**: the project root that decides where everything lands |
 
 ## Credential strategy (important)
 
@@ -203,6 +257,12 @@ Additional rules:
 
 - **The target must rebuild dependencies**: `node_modules` does not travel. After landing, run `pnpm install` (or `dsh plugin add`) once on the target, otherwise dsh will not start — verify reports this as a WARN on I9, so you are never left thinking it is done.
 - **The target needs node ≥22.15** for built-in zstd; otherwise sessions are not migrated (and it says so loudly, never silently).
+- **Project directories are not packaged by default**: a session's cwd points outside `$DSH_HOME`. Without
+  `includeWorkspaces` those directories do not travel and the target lists the conversations but opens them
+  empty (I8 names each missing directory). With it, they are packaged by root (`.git` kept, `node_modules`
+  excluded) and land under one `workspaceRoot`; an existing non-empty landing directory is **refused** unless
+  you pass `overwriteWorkspaces=true`. Expect the bundle to grow from hundreds of MB to GBs — run
+  `preview=true` first to see the candidates and their sizes.
 - **The host version is read from `dsh-runtimes/<runtime>/runtime.json` (`desktopVersion`)**, which is not the
   installer version — after an app upgrade without reinstalling the runtime it can lag by a patch, so a
   difference within the same `major.minor` is only a soft warning. Across `major.minor`, plugins may be denied
@@ -219,7 +279,7 @@ Additional rules:
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 86 tests: pure functions + zstd frames + session migration + host runtime fingerprint + full export→apply→verify
+npm test        # 110 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + full export→apply→verify
 npm run verify
 ```
 
