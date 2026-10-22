@@ -8,6 +8,10 @@ import Schema from '@deepseek-ai/schemastery'
 import { defineExportTool } from './lib/tools/export.js'
 import { defineApplyTool } from './lib/tools/apply.js'
 import { defineVerifyTool } from './lib/tools/verify.js'
+import { defineLanHostTool } from './lib/tools/lan-host.js'
+import { defineLanPullTool } from './lib/tools/lan-pull.js'
+import { defineLanStatusTool } from './lib/tools/lan-status.js'
+import { defineLanDiscoverTool } from './lib/tools/lan-discover.js'
 
 export const name = 'sync'
 export const inject = ['tools', 'systemPrompt']
@@ -17,6 +21,8 @@ export const SETTINGS_NAMESPACE = 'sync'
 const GUIDANCE = `## Migrate an entire dsh installation between machines (dsh-sync)
 
 Three tools form one pipeline: **export on the source → carry the bundle → apply + verify on the target.**
+The carry step is optional; when both machines are on the same network, four more tools move the bundle
+directly (see "Moving the bundle over the LAN").
 
 ### What "migrated" means here
 Three layers. The first two are on by default; the third is opt-in and you usually need it too:
@@ -85,11 +91,11 @@ When the user asks which machine is the new one, give them verifiable signals, n
 code present, what does \`preview=true\` list, how large is \`$DSH_HOME\`. The bundle records
 \`hostname + user + $DSH_HOME\` only — no hardware fingerprints.
 
-### The three tools
+### The three migration tools
 1. \`dshsync_export\` — on the source. \`preview=true\` first (scans, writes nothing). Use \`profile="*"\`.
-2. \`dshsync_apply\` — on the target, after copying the bundle over. **Always \`dryRun=true\` first.**
-   Verifies every sha256 and stops before touching anything if the bundle is damaged; backs up whatever
-   it overwrites to \`$DSH_HOME/.dsh-sync-backup-<ts>/\`.
+2. \`dshsync_apply\` — on the target, after getting the bundle there (locally via the LAN tools, or by any
+   other copy). **Always \`dryRun=true\` first.** Verifies every sha256 and stops before touching anything
+   if the bundle is damaged; backs up whatever it overwrites to \`$DSH_HOME/.dsh-sync-backup-<ts>/\`.
 3. \`dshsync_verify\` — proves the result, one invariant at a time: bundle integrity, session count,
    folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
    had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
@@ -117,9 +123,36 @@ re-entered on the target. Never echo secret values; only masked previews.
 
 ### Carrying the bundle
 Any transport works, but the bundle contains file trees: prefer a real copy over anything that flattens
-structure. \`dsh-localsend\`'s SMB channel is fine for the archive form; for a directory tree, a plain
-network share copy preserves more. Verify after transfer — \`dshsync_apply\` checks sha256 before writing,
-so a damaged transfer is caught, never applied.
+structure. For a machine-to-machine move on the same network, use the LAN tools below — they keep the tree
+intact, hash every file in flight and need no third-party software. \`dsh-localsend\`'s SMB channel is fine
+for the archive form. Verify after transfer — \`dshsync_apply\` checks sha256 before writing, so a damaged
+transfer is caught, never applied.
+
+### Moving the bundle over the LAN (no USB drive, no cloud)
+Four tools cover the transfer itself:
+1. \`dshsync_lan_host\` — on the **source**, after export. Prints a 6-digit pairing code and the URL of a
+   live progress page, then returns; the service keeps running in the background. \`action="renew"\` issues
+   a fresh code, \`action="stop"\` shuts it down.
+2. \`dshsync_lan_discover\` — on the **target**, when the source IP is unknown. UDP broadcast first (about a
+   second), per-address scan as fallback (about three seconds) for when broadcast is blocked.
+3. \`dshsync_lan_pull\` — on the **target**. Pairs, waits for the human click, streams the files, then runs
+   apply + verify. Returns a jobId immediately; the transfer continues in the background.
+4. \`dshsync_lan_status\` — either side. Progress, speed, ETA, and the final apply/verify report.
+
+Two properties are deliberate and must not be relaxed:
+- **The pairing code is not authorization.** Knowing the code is not enough: the transfer starts only when
+  the human clicks accept on the source machine's page, and \`/decide\` rejects requests that do not
+  originate from the source machine itself. Remote viewers get a read-only page and never receive the code
+  at all. Codes are single-use, expire in five minutes, and lock after five wrong attempts.
+- **Nothing lands until its hash matches.** Each file is written as \`*.dshsync-part\` and renamed only after
+  sha256 agrees. Paths in the stream are untrusted — absolute paths and anything escaping the destination
+  are rejected. Re-running a pull resumes: files already present with a matching hash are skipped.
+
+Progress is shown on a browser page rather than in the conversation for a concrete reason: tool calls have
+no streaming channel (\`execute()\` returns once, at the end), so a long transfer would look like a hang.
+Do not poll with sleeps; call \`dshsync_lan_status\` when the user asks how it is going.
+The page binds to the LAN address on the source and to loopback on the target; the source refuses
+connections from public addresses unless \`allowPublic\` is set.
 
 Constraints: read-only on the source; same-user \`$DSH_HOME\`; the target needs a compatible dsh + node 22.15+
 (内建 zstd) + pnpm + network. A bundle is untrusted data once on the wire.`
@@ -220,12 +253,16 @@ export function apply(ctx, config = {}) {
     if (typeof ctx.tools?.register !== 'function') {
       report(ctx, 'tools.register API changed; dsh-sync tools not registered')
     } else {
-      // 三个工具各自独立 try/catch：某一支注册失败不应连累另外两支
+      // 七个工具各自独立 try/catch：某一支注册失败不应连累其它支
       // （导出端能跑、接收端不能跑，总比全都没了强）。
       for (const [label, factory] of [
         ['dshsync_export', defineExportTool],
         ['dshsync_apply', defineApplyTool],
         ['dshsync_verify', defineVerifyTool],
+        ['dshsync_lan_host', defineLanHostTool],
+        ['dshsync_lan_pull', defineLanPullTool],
+        ['dshsync_lan_status', defineLanStatusTool],
+        ['dshsync_lan_discover', defineLanDiscoverTool],
       ]) {
         try {
           ctx.tools.register(factory(getConfig))

@@ -4,6 +4,8 @@ English | [中文](README.md)
 
 Move **an entire machine's dsh state** to another machine. After switching, the new machine is not merely "working" — it is **the same as the old one**: same settings, same plugins, same conversation history, same workspace list, same skills links.
 
+There are two ways to move it: carry the bundle by hand (export → copy → land → verify), or go **straight over the LAN** (`dshsync_lan_host` + `dshsync_lan_pull`: pair, then one command pulls it over, lands it and verifies it — no USB drive, no cloud drive).
+
 Three layers, and missing any of them is not "identical":
 
 | Layer | Contents | What breaks without it |
@@ -178,7 +180,47 @@ dsh-sync-bundle/
 
 ### Carry it over
 
-Copy the whole folder to the new machine (USB drive / cloud / LAN all work).
+Two ways, pick one.
+
+**A. Straight over the LAN (recommended)** — no USB drive, no cloud drive, one command each side.
+
+On the source, after exporting, serve the bundle:
+
+```
+dshsync_lan_host(bundleDir="D:/dsh-bundle")
+```
+
+It prints a 6-digit pairing code and a live progress page (`http://<source-ip>:38473/`), then **returns
+immediately** — the service keeps running in the background, so the conversation is not blocked for minutes.
+
+On the new machine:
+
+```
+dshsync_lan_pull(host="192.168.1.23", code="123456",
+                 destDir="D:/incoming/dsh-sync-bundle",
+                 workspaceRoot="E:/code")
+```
+
+That one call pairs, waits for you to click **accept** on the source machine's page, streams every file while
+checking sha256, then runs `apply` and `verify` automatically. It all happens in the background: the local
+progress page is at `http://127.0.0.1:38474/`, and `dshsync_lan_status(jobId="...")` reports where it stands.
+
+**The pairing code is not authorization.** Knowing the code is not enough: the transfer starts only after
+someone clicks accept on the source machine, and that button only works from the source machine itself —
+anyone else opening the same address over the LAN gets a read-only page and never sees the code. Codes expire
+in five minutes and cannot be used from a different machine (the same machine may reuse one, which is what
+makes resuming work).
+
+**Interrupted? Just run the same command again** — files already received with a matching hash are skipped.
+Measured on loopback: 2516 files / 172 MB in 11 s (15.6 MB/s); the resume pass transferred 0 bytes.
+
+Don't know the source IP? Run `dshsync_lan_discover()` on the new machine first: UDP broadcast (about a
+second), falling back to a per-address scan (about three seconds) when broadcast is blocked, and it tells you
+which layer blocked it.
+
+**B. Copy it manually**
+
+Copy the whole folder to the new machine (USB drive / cloud / LAN share all work).
 Through `dsh-localsend`, send the directory tree with `localsend_smb_push`; note that its packer **skips symlinks** — this plugin's `links.json` mechanism exists precisely for that, so nothing is lost.
 
 ### New machine: land it
@@ -248,8 +290,12 @@ instead of quietly passing.
 | Tool | Runs on | Description |
 |---|---|---|
 | `dshsync_export` | Source | Export the bundle. The source is **read-only** (copy only, never modifies config) |
-| `dshsync_apply` | Target | Land it + path remapping + session rewrite + symlink rebuild. Supports `dryRun` |
+| `dshsync_apply` | Target | Land it + workspace unpack + path remapping + session rewrite + symlink rebuild. Supports `dryRun` |
 | `dshsync_verify` | Target | Verify consistency, item by item |
+| `dshsync_lan_host` | Source | Serve the bundle over the LAN; prints the pairing code and progress page. `action="renew"` reissues a code, `action="stop"` shuts it down |
+| `dshsync_lan_discover` | Target | Find machines serving a bundle. UDP broadcast first, per-address scan as fallback |
+| `dshsync_lan_pull` | Target | Pair → wait for the click → receive → apply → verify, one command. Runs in the background, returns a jobId |
+| `dshsync_lan_status` | Both | Progress, speed, ETA, and the final apply/verify report |
 
 ## Configuration (settings namespace `sync`)
 
@@ -288,6 +334,22 @@ Additional rules:
 | **Atomic swap** | Session rewrites go through tmp + rename; an interrupted run never leaves half a file |
 | **Lossy operations need explicit consent** | Sessions with a torn frame chain are **refused** (a torn tail may be self-healing; forcing a write would break it) |
 
+The LAN layer adds five more, all because "someone on the same subnet" is not a trusted party by default:
+
+| Mechanism | Effect |
+|---|---|
+| **Accept can only be clicked on the source machine** | `/decide` checks whether the request's source address belongs to a local interface; anyone else opening the page over the LAN gets a read-only view |
+| **The pairing code never leaves the local machine** | The page renders in two shapes; the remote snapshot does not contain `pair.code` at all |
+| **Single use + 5 minutes + lock after 5 wrong tries** | Six digits, five attempts, so the guessing odds are 5e-6; after locking even the correct code is refused until a new one is issued |
+| **Private source addresses only** | Anything outside 10/8, 172.16/12, 192.168/16, 169.254/16 and loopback gets a 403 — this catches the configuration accident of a desktop machine sitting directly on the public internet |
+| **Nothing lands until it is verified** | Files are written as `*.dshsync-part` and renamed only after both sha256 and length match; every path in the stream is resolved and confirmed to stay inside the destination |
+
+"Single use" has one deliberate exemption: **the same machine may reuse a code** (a different source is still
+refused). This came out of measurement — the code is marked used on the first pairing, but "the transfer broke
+halfway, run it again" needs to pair once more. Without the same-source exemption, resuming is simply
+unusable from the user's point of view. A leaked code always arrives from a different address, so it stays
+blocked.
+
 ## Known limitations
 
 - **The target must rebuild dependencies**: `node_modules` does not travel. After landing, run `pnpm install` (or `dsh plugin add`) once on the target, otherwise dsh will not start — verify reports this as a WARN on I9, so you are never left thinking it is done.
@@ -309,17 +371,30 @@ Additional rules:
 - **Git dependencies need build approval**: a `github:` dependency added for the first time on the target may be rejected by pnpm ≥10's build gate.
 - **`pnpm-lock.yaml` is not moved**: it contains the source machine's absolute `link:` paths.
 - **A missing `settings.yaml` passes silently**: this machine simply has no such file (only historical `.bak`s), and export will not invent one. To confirm settings travelled, check the `homeFiles` list in the export report.
+- **LAN progress is a browser page, not a panel inside DSH**: the host tool interface has no streaming channel
+  (`execute()` returns once, at the end), so real-time progress in the conversation is impossible by design.
+  Progress therefore goes over local HTTP + SSE.
+- **Transfer job state lives in memory**: after a plugin reload (config change, upgrade, DSH restart) old
+  jobIds are gone. Files already received stay on disk and the next `dshsync_lan_pull` resumes by hash rather
+  than starting over. Do not quit DSH while a transfer runs.
+- **Windows shows a firewall prompt on first listen**; allow it on the "private network" profile. Choosing
+  "public" or cancelling means the other machine cannot connect (the error message points here). When UDP
+  38472 is blocked, `dshsync_lan_discover` falls back to a per-address scan — a couple of seconds slower.
 
 ## Development and testing
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 114 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + full export→apply→verify
+npm test        # 149 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + full export→apply→verify
 npm run verify
 ```
 
-All tests use **synthetic data** (self-built zstd multi-frame files, temp dshHomes); they never read a real `$DSH_HOME` and never touch the network.
-Negative cases prove the checks actually fail (tamper with the bundle → apply refuses and writes nothing; corrupt a cwd → verify reports FAIL).
+All tests use **synthetic data** (self-built zstd multi-frame files, temp dshHomes); they never read a real
+`$DSH_HOME` and never touch an external network. The LAN group does start a real HTTP server, but only on
+`127.0.0.1`.
+Negative cases prove the checks actually fail (tamper with the bundle → apply refuses and writes nothing;
+corrupt a cwd → verify reports FAIL; open a stream before confirmation → 403; a frame carrying
+`../../.ssh/...` → rejected).
 
 ## License
 
