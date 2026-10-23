@@ -314,6 +314,49 @@ dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
 (`D:/deep` 不会碰到 `D:/deepseek/...`)。不要自创"最长前缀优先"—— 多条规则重叠时会算出
 与你书写顺序不同的结果。
 
+### 再迁一次(第二次及以后)
+
+第一次迁移的目标机是空的,覆盖写怎么写都无所谓。**第二次不是** —— 目标机已经用了一段时间,
+它自己装过插件、注册过工作区、改过设置,而这些**不在源机的快照里**,一盖就没了(备份目录里有,
+但没人会去翻)。
+
+第二次开始请加 `merge=true`:它先把 bundle 与**本机现状**比一遍,**只要还有一项没决定就停在写盘之前**,
+本机一个字节都不会动:
+
+```
+dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle", workspaceRoot="E:/code", merge=true)
+```
+
+它会列出四类分歧:
+
+| 类别 | 什么情况算分歧 |
+|---|---|
+| `plugins` | 本机声明里有、bundle 里没有(落地后**从声明中消失**,源码还躺在 `plugins/` 里但没人加载它);或两边都有但版本不同 |
+| `workspaces` | 本机注册过、bundle 里没有的工作区记录 |
+| `settings` | 两边 settings.yaml 不一样(**不做三方合并**:锚点、注释、键序在不知道 schema 的情况下并对不了,合坏的结果比任一边都糟) |
+| `sessions` | 汇总一条:多少个会话两边都有但日志份数不同(会话可以有几百个,逐条列等于没列) |
+
+然后照着清单填 `resolutions` 再跑一次(其他参数不变):
+
+```
+dshsync_apply(..., merge=true, resolutions={
+  plugins:    {"desktop/dsh-outline": "keep-target"},   # 留本机装的
+  workspaces: {"w-new": "keep-target"},
+  settings:   "target",                                 # 保留本机设置
+  sessions:   "append-missing",                         # 只补本机缺的日志
+})
+```
+
+- `keep-target` = 留本机的;`take-source` = 跟源机走(本机这项就没了)。
+- `settings` 是 `target` / `source` 二选一。
+- `sessions` 统一给一个策略:`skip`(不动)/ `append-missing`(**只补本机缺的那几份日志**,
+  已有的一个字节都不碰,包括本机自己追加的)/ `prefer-source`(以源机为准,会覆盖)/ `prefer-target`(同 skip)。
+- **没填的项没有默认值** —— 这就是 merge 的意义,宁可让你多看一眼,也不能替你猜。
+
+会话一律是**文件级**操作:绝不拆帧再重组,否则"历史不可能被破坏"这条保证就不成立了。
+
+目标机还是空的(第一次迁移)不用开 merge,没有东西可冲突,直接覆盖更简单。
+
 ### 新电脑:核对
 
 ```
@@ -351,7 +394,7 @@ I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被
 | 工具 | 在哪跑 | 说明 |
 |---|---|---|
 | `dshsync_export` | 源机 | 导出 bundle。源机**只读**(只复制,从不改配置) |
-| `dshsync_apply` | 目标机 | 落地 + 工作区解包 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun` |
+| `dshsync_apply` | 目标机 | 落地 + 工作区解包 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun`;`merge=true` 用于第二次及以后的迁移(先出分歧清单,未决即停) |
 | `dshsync_verify` | 目标机 | 逐条核对一致性 |
 | `dshsync_lan_host` | 源机 | 起局域网发送端,给出配对码与进度页。`bundleDir` 缺省取配置的输出目录。`action="renew"` 换码、`action="stop"` 关停 |
 | `dshsync_lan_discover` | 目标机 | 找局域网里开着的发送端。UDP 广播优先,逐地址扫描兜底。结果带 `id` 与序号,会被记住 |
@@ -468,7 +511,7 @@ bundle，后者若进表单就会明文落在 `settings.yaml` 里。它们仍然
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 219 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 局域网直传 + 设备选中 + 落地安全(重跑幂等 / 回写检测) + 全链路 export→apply→verify
+npm test        # 231 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 局域网直传 + 设备选中 + 落地安全(重跑幂等 / 回写检测) + 多次交接分歧决议 + 全链路 export→apply→verify
 npm run verify
 ```
 

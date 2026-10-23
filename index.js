@@ -113,6 +113,31 @@ code present, what does \`preview=true\` list, how large is \`$DSH_HOME\`. The b
    directories having landed** (pass \`workspaceRoot\` to check that last one).
    Treat a FAIL as "dsh will not see that part of the state".
 
+### Migrating a second time (onto a machine that is already in use)
+The default landing is a plain overwrite. That is right for a fresh target and wrong for a used one:
+whatever the target acquired since the last migration — plugins it installed, workspaces it registered,
+settings it changed — is not in the source snapshot, so overwriting silently deletes it. The deleted
+things are in the backup directory, but nobody reads those.
+Pass \`merge=true\` to \`dshsync_apply\`. It compares the bundle against what the target has **before writing
+anything** and stops while any conflict is unresolved:
+- \`plugins\` — declared on the target but absent from the bundle (it would vanish from the declaration,
+  leaving its source sitting in \`plugins/\` with nothing loading it), or present on both sides with
+  different specs;
+- \`workspaces\` — workspace records the target has and the bundle does not;
+- \`settings\` — settings.yaml differs. Never three-way merged: anchors, comments and key order cannot be
+  reconciled without knowing the schema, and a bad merge is worse than either side;
+- \`sessions\` — one summary line, because there can be hundreds and their disagreement is uniform.
+
+Then run again with \`resolutions\` giving a choice for each. **Nothing has a default** — an unresolved item
+stays unresolved and the run stops again. \`sessions\` takes a single policy for all of them: \`skip\` (leave
+the target's alone), \`append-missing\` (copy only the log files the target lacks, never rewriting the ones
+it has), \`prefer-source\` (overwrite with the source's), \`prefer-target\` (same as \`skip\`). It is all
+file-level: frames are never split apart and reassembled, because that is exactly what makes "history
+cannot be corrupted" true in the first place.
+A fresh target does not need \`merge\` — with nothing on the other side there is nothing to conflict about,
+and a plain overwrite is simpler. Reach for it on the **second** migration, and say plainly which way each
+conflict went when you report back; do not quietly pick a side for the user.
+
 ### Host version (the failure that hides from every file check)
 A bundle can be perfect and the target still show an empty plugin list: the host runs a peer-compatibility
 ruling at startup, and a version mismatch leaves every plugin \`stays installed but startup denies it\`.

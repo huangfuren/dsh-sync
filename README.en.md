@@ -318,6 +318,54 @@ Mapping rules: **applied in order, first match wins, and a match must fall on a 
 
 **The target's `$DSH_HOME` may live wherever you like.** If it differs from the source machine's, internal symlinks (those pointing inside `$DSH_HOME`) are relocated from the source prefix to the target prefix, preserving their relative path, and the count is reported. Set it with `DSH_HOME`, or pass `dshHome` in the plugin config.
 
+### Migrating a second time
+
+The first migration lands on an empty machine, so a plain overwrite costs nothing. **The second one is
+different**: the target has been used since — it installed plugins, registered workspaces, changed
+settings — and none of that is in the source snapshot, so overwriting deletes it. It is in the backup
+directory afterwards, but nobody reads those.
+
+From the second migration on, pass `merge=true`. It compares the bundle against **what this machine has
+now** and **stops before writing anything** while any conflict is unresolved:
+
+```
+dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle", workspaceRoot="E:/code", merge=true)
+```
+
+Four kinds of disagreement are listed:
+
+| Kind | What counts |
+|---|---|
+| `plugins` | Declared here but absent from the bundle (it would **vanish from the declaration** — the source stays in `plugins/` with nothing loading it), or present on both sides with different specs |
+| `workspaces` | Workspace records this machine has and the bundle does not |
+| `settings` | settings.yaml differs. **Never three-way merged** — anchors, comments and key order cannot be reconciled without knowing the schema, and a bad merge is worse than either side |
+| `sessions` | One summary line: how many sessions exist on both sides with different log files (there can be hundreds; listing them individually lists nothing) |
+
+Then run it again with `resolutions`, everything else unchanged:
+
+```
+dshsync_apply(..., merge=true, resolutions={
+  plugins:    {"desktop/dsh-outline": "keep-target"},   # keep what this machine installed
+  workspaces: {"w-new": "keep-target"},
+  settings:   "target",                                 # keep this machine's settings
+  sessions:   "append-missing",                         # only copy the logs this machine lacks
+})
+```
+
+- `keep-target` keeps this machine's; `take-source` follows the source (this machine's copy goes away).
+- `settings` is a straight `target` / `source` choice.
+- `sessions` takes one policy for all of them: `skip` (leave them alone) / `append-missing` (**only the log
+  files this machine lacks** — the ones it has are not touched, including anything it appended itself) /
+  `prefer-source` (overwrite with the source's) / `prefer-target` (same as `skip`).
+- **Anything you leave out has no default.** That is the whole point of `merge`: better to make you look
+  once than to guess for you.
+
+Sessions are always handled at **file level** — frames are never split apart and reassembled, because that
+is precisely what makes "history cannot be corrupted" true.
+
+A still-empty target does not need `merge`: there is nothing to conflict about, and a plain overwrite is
+simpler.
+
 ### New machine: verify
 
 ```
@@ -358,7 +406,7 @@ instead of quietly passing.
 | Tool | Runs on | Description |
 |---|---|---|
 | `dshsync_export` | Source | Export the bundle. The source is **read-only** (copy only, never modifies config) |
-| `dshsync_apply` | Target | Land it + workspace unpack + path remapping + session rewrite + symlink rebuild. Supports `dryRun` |
+| `dshsync_apply` | Target | Land it + workspace unpack + path remapping + session rewrite + symlink rebuild. Supports `dryRun`; `merge=true` for a second (or later) migration onto a machine already in use — lists the disagreements first and stops while any is unresolved |
 | `dshsync_verify` | Target | Verify consistency, item by item |
 | `dshsync_lan_host` | Source | Serve the bundle over the LAN; prints the pairing code and progress page. `bundleDir` defaults to the configured output directory. `action="renew"` reissues a code, `action="stop"` shuts it down |
 | `dshsync_lan_discover` | Target | Find machines serving a bundle. UDP broadcast first, per-address scan as fallback. Results carry an `id` and an index, and are remembered |
@@ -479,7 +527,7 @@ blocked.
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 219 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + device selection + landing safety (re-run idempotency / writeback detection) + full export→apply→verify
+npm test        # 231 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + device selection + landing safety (re-run idempotency / writeback detection) + repeat-migration conflict resolution + full export→apply→verify
 npm run verify
 ```
 
