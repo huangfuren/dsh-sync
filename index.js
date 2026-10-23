@@ -26,6 +26,13 @@ Three tools form one pipeline: **export on the source → carry the bundle → a
 The carry step is optional; when both machines are on the same network, four more tools move the bundle
 directly (see "Moving the bundle over the LAN").
 
+### Terminology — "source" always means the OLD machine
+The **source machine (源机) is the OLD machine**: the one that already has the history, plugins and
+project code. It runs \`dshsync_export\` / \`dshsync_lan_host\` and stays read-only. The **target
+machine (目标机) is the NEW machine**: the freshly installed one that should become identical. It runs
+\`dshsync_apply\` / \`dshsync_lan_pull\` / \`dshsync_verify\`. When relaying reports to the user, say
+旧机/新机 alongside 源机/目标机 — never let "source" be read as "the machine we're setting up now".
+
 ### What "migrated" means here
 Three layers. The first two are on by default; the third is opt-in and you usually need it too:
 - **Declaration layer** — settings.yaml, optional credentials, each profile's declaration files, and the

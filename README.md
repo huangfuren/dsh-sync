@@ -8,6 +8,10 @@
 搬这一趟有两条路:手动搬 bundle(导出 → 拷 → 落地 → 核对),或者**局域网直传**
 (`dshsync_lan_host` + `dshsync_lan_pull`:配对后一条命令拉过去、自动落地并核验,不用 U 盘也不用网盘)。
 
+> **术语(全文与工具输出统一按此方向)**:**源机 = 旧机** —— 有历史、要搬出去的那台,跑
+> `dshsync_export` / `dshsync_lan_host`,全程只读;**目标机 = 新机** —— 刚装好、要变成跟旧机一样的
+> 那台,跑 `dshsync_apply` / `dshsync_lan_pull` / `dshsync_verify`。「source」永远不指「正在配置的这台」。
+
 分三层,缺一层都不是"一致":
 
 | 层 | 内容 | 缺了会怎样 |
@@ -316,7 +320,7 @@ dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
 dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 ```
 
-逐条核对 12 项不变量,每项给 PASS / FAIL / WARN:
+逐条核对 13 项不变量,每项给 PASS / FAIL / WARN:
 
 | ID | 核对内容 |
 |---|---|
@@ -332,12 +336,13 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 | I10 | 状态层 7 个部分全部落地,文件数与源机一致 |
 | I11 | 宿主运行时一致（dsh 版本 / 平台 / 架构 / node 大版本）；跨 `major.minor` 时插件会被启动时拒装 |
 | I12 | 工作区代码真的落地了（传 `workspaceRoot` 才核对；不传只报 WARN，不猜） |
+| I13 | 落地后回写:apply 写入的 settings / 凭据 / workspace.json 自落地起未被宿主写回盖掉（依据 apply 写下的落地回执 `.dsh-sync-apply-receipt.json`;宿主原样重写不算,内容变了才 FAIL） |
 
 `FAIL` 的含义是:**这部分状态 dsh 看不到**。不是"可能有点问题",是确定对不上。
 
 I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被工具拦下。但它挡的是最阴的一种失败 ——
 宿主启动时做 peer 兼容性裁决,版本对不上时插件是 `stays installed but startup denies it`:
-文件都在、sha256 全对、I1–I12 全绿,**界面里插件却是空的**。这条提示不给,用户会以为是 dsh-sync 搬丢了东西。
+文件都在、sha256 全对、I1–I13 全绿,**界面里插件却是空的**。这条提示不给,用户会以为是 dsh-sync 搬丢了东西。
 
 版本取不到时不猜:两端任一取不到就报「需人工确认」,不假判 `PASS`。
 
@@ -413,6 +418,8 @@ bundle，后者若进表单就会明文落在 `settings.yaml` 里。它们仍然
 | **覆盖前备份** | 逐个备份到 `$DSH_HOME/.dsh-sync-backup-<时间戳>/`,保留相对路径 |
 | **原子换入** | 会话改写走 tmp + rename,中途失败不会留下半个文件 |
 | **有损操作要显式放行** | 帧链不完整的会话**拒绝改写**(可能是可自愈的撕裂尾帧,硬写会弄坏) |
+| **重跑幂等** | 会话落地前先按映射算落点:目标机已是迁移后状态的会话**跳过复制**(顺带保住迁移后新增的聊天帧),重跑不会留下「旧目录名 + 新 cwd」的孤儿分组 |
+| **回写检测** | apply 记下 settings / 凭据 / workspace.json 落地内容的 sha256:落地结束时当场复核(抓并发回写),并写成落地回执供 `dshsync_verify` 的 I13 随时复核(抓「落地之后、重启之前」宿主把内存旧配置写回) |
 
 局域网直传这一层额外加了五道,理由都是「同网段的人不是默认可信」:
 
@@ -461,7 +468,7 @@ bundle，后者若进表单就会明文落在 `settings.yaml` 里。它们仍然
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 209 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 局域网直传 + 设备选中 + 全链路 export→apply→verify
+npm test        # 219 个测试:纯函数 + zstd 帧 + 会话迁移 + 工作区打包 + 宿主运行时指纹 + 局域网直传 + 设备选中 + 落地安全(重跑幂等 / 回写检测) + 全链路 export→apply→verify
 npm run verify
 ```
 

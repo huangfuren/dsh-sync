@@ -6,6 +6,12 @@ Move **an entire machine's dsh state** to another machine. After switching, the 
 
 There are two ways to move it: carry the bundle by hand (export → copy → land → verify), or go **straight over the LAN** (`dshsync_lan_host` + `dshsync_lan_pull`: pair, then one command pulls it over, lands it and verifies it — no USB drive, no cloud drive).
 
+> **Terminology — "source" always means the OLD machine.** The **source machine (源机) is the OLD one**:
+> the machine that already has the history, plugins and project code. It runs `dshsync_export` /
+> `dshsync_lan_host` and is never written to. The **target machine (目标机) is the NEW one**: the freshly
+> installed machine that should become identical. It runs `dshsync_apply` / `dshsync_lan_pull` /
+> `dshsync_verify`. Never read "source" as "the machine we are setting up right now".
+
 Three layers, and missing any of them is not "identical":
 
 | Layer | Contents | What breaks without it |
@@ -318,7 +324,7 @@ Mapping rules: **applied in order, first match wins, and a match must fall on a 
 dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 ```
 
-Eleven invariants, each reported PASS / FAIL / WARN:
+Thirteen invariants, each reported PASS / FAIL / WARN:
 
 | ID | Check |
 |---|---|
@@ -334,14 +340,14 @@ Eleven invariants, each reported PASS / FAIL / WARN:
 | I10 | All 7 state parts landed, with file counts matching the source |
 | I11 | Host runtime agreement (dsh version / platform / arch / node major); across `major.minor` the host denies plugins at startup |
 | I12 | Packaged workspaces actually landed (checked only when you pass `workspaceRoot`; otherwise WARN, never a guess) |
-| I11 | Host runtime matches (dsh version / platform / arch / node major). A cross-generation version gap makes plugins **denied at startup** |
+| I13 | No post-landing writeback: `settings.yaml` / credentials / `workspace.json` have not been overwritten by the host since landing (checked against the receipt `dshsync_apply` leaves at `$DSH_HOME/.dsh-sync-apply-receipt.json`; a byte-identical rewrite is not drift — only changed content fails) |
 
 `FAIL` means: **dsh cannot see this state.** Not "might be a bit off" — it is definitely out of sync.
 
 I11 is a WARN rather than a FAIL: upgrading dsh while migrating is legitimate and must not be blocked.
 But it guards the nastiest failure of all — the host runs a peer-compatibility ruling at startup, and a
 version mismatch leaves plugins `stays installed but startup denies it`: every file present, every sha256
-correct, I1–I12 green, **and the plugin list empty**. Without this line you would blame dsh-sync for
+correct, I1–I13 green, **and the plugin list empty**. Without this line you would blame dsh-sync for
 losing your plugins.
 
 Versions are never guessed: if either side is unavailable the check says "needs manual confirmation"
@@ -419,6 +425,8 @@ Additional rules:
 | **Backup before overwrite** | Each item backed up to `$DSH_HOME/.dsh-sync-backup-<timestamp>/`, preserving relative paths |
 | **Atomic swap** | Session rewrites go through tmp + rename; an interrupted run never leaves half a file |
 | **Lossy operations need explicit consent** | Sessions with a torn frame chain are **refused** (a torn tail may be self-healing; forcing a write would break it) |
+| **Re-runs are idempotent** | Sessions are placed by mapping before copying: a session already in post-migration state on the target is **skipped** (which also preserves turns added after the migration), so a re-run never leaves an orphan group with an old folder name and a new cwd |
+| **Writeback detection** | `dshsync_apply` records the sha256 of `settings.yaml` / credentials / `workspace.json` as landed: it re-checks at the end of the run (catching concurrent writeback) and writes a receipt so `dshsync_verify`'s I13 can re-check any time (catching the host flushing its in-memory config back after landing, before restart) |
 
 The LAN layer adds five more, all because "someone on the same subnet" is not a trusted party by default:
 
@@ -471,7 +479,7 @@ blocked.
 
 ```bash
 npm run check   # node --check on every source file
-npm test        # 209 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + device selection + full export→apply→verify
+npm test        # 219 tests: pure functions + zstd frames + session migration + workspace packing + host runtime fingerprint + LAN transfer + device selection + landing safety (re-run idempotency / writeback detection) + full export→apply→verify
 npm run verify
 ```
 
