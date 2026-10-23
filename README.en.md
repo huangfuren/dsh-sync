@@ -12,6 +12,22 @@ There are two ways to move it: carry the bundle by hand (export → copy → lan
 > installed machine that should become identical. It runs `dshsync_apply` / `dshsync_lan_pull` /
 > `dshsync_verify`. Never read "source" as "the machine we are setting up right now".
 
+## Install
+
+```sh
+dsh plugin --profile web add github:huangfuren/dsh-sync
+```
+
+Replace `web` with the profile you actually use (the desktop app is `desktop`). **Both machines need
+it** — the sending side and the landing side both live in this package. **Restart dsh** afterwards: the
+seven tools and the three same-origin routes are registered at startup, and none of them exist before
+that restart.
+
+It is also listed in the plugin market (dsh-market) — search for `dsh-sync` and install from the
+detail page.
+
+Requirements: node ≥ 22.19 (built-in zstd); for the LAN route, both machines on the same network.
+
 Three layers, and missing any of them is not "identical":
 
 | Layer | Contents | What breaks without it |

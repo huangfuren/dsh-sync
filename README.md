@@ -12,6 +12,19 @@
 > `dshsync_export` / `dshsync_lan_host`,全程只读;**目标机 = 新机** —— 刚装好、要变成跟旧机一样的
 > 那台,跑 `dshsync_apply` / `dshsync_lan_pull` / `dshsync_verify`。「source」永远不指「正在配置的这台」。
 
+## 安装
+
+```sh
+dsh plugin --profile web add github:huangfuren/dsh-sync
+```
+
+把 `web` 换成你实际使用的 profile(桌面端是 `desktop`)。**新旧两台机器都要装** —— 发送端与落地端
+都在这个包里。装完**重启 dsh**:7 个工具与 3 条同源路由都在启动时注册,不重启既看不见也调不到。
+
+也可以在插件市场(dsh-market)里搜 `dsh-sync`,从详情页一键安装。
+
+要求:node ≥ 22.19(要有内建 zstd);走局域网直传时两台机器需在同一网段。
+
 分三层,缺一层都不是"一致":
 
 | 层 | 内容 | 缺了会怎样 |
