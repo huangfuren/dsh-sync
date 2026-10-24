@@ -26,7 +26,7 @@ Two ways to move it: carry the bundle by hand (export → copy → land → veri
 dsh plugin --profile web add github:huangfuren/dsh-sync
 ```
 
-Replace `web` with the profile you actually use (the desktop app is `desktop`). **Both machines need it** — the sending side and the landing side both live in this package. **Restart dsh** afterwards: the seven tools and the three same-origin routes are registered at startup, and none of them exist before that restart.
+Replace `web` with the profile you actually use (the desktop app is `desktop`). **Both machines need it** — the sending side and the landing side both live in this package. **Restart dsh** afterwards: the eight tools and the three same-origin routes are registered at startup, and none of them exist before that restart.
 
 It is also listed in the plugin market (dsh-market) — search for `dsh-sync` and install from the detail page.
 
@@ -368,7 +368,7 @@ Same host with a different `DSH_HOME` (an in-place rehearsal, two environments o
 <details>
 <summary><b>Desktop app vs web host</b></summary>
 
-Same plugin, same seven tools: there is no client half and no build step, so the loading path is identical. Three things genuinely differ, and all have bitten:
+Same plugin, same eight tools: there is no client half and no build step, so the loading path is identical. Three things genuinely differ, and all have bitten:
 
 **① The profile you run is not necessarily `web`.** The desktop app loads `profiles/desktop`; a plugin installed only into `profiles/web` simply does not exist there (files present, nothing in the UI). Two consequences: this plugin's `profile` defaults to `*` (all profiles), so an omission cannot silently skip the one you actually use; and the plugin itself has to be installed into that profile. One command tells you:
 

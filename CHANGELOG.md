@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.15.0 (2026-10-24)
+
+**一次真实换机迁移的全程复盘（12 个问题，P1–P12）直接落成了代码。** 复盘文档逐条给出宿主侧
+证据（宿主日志原文、错误措辞、激活链级联），这一版把其中会伤数据、会白迁、会死局的项全部修进
+插件，其余按 verify 检查项兜底。231 → 239 个测试全绿，其中 8 条是这次复盘的回归用例。
+
+### 五个落点补齐（P3 / P4 / P10 / P11 —— 会话身份索引缺了两层）
+
+迁移的落点清单从三处补到**五处**：会话首帧 cwd → 分组目录名 → workspace.json →
+**session_projcache 两层（新增）** → skills 软链。此前 0.14.x 一层 projcache 都没碰：
+单元 dump（`tables.sessions[*].identity.cwd`）漏了表现为「侧栏会话列表空白」（P3），
+逐会话记录（`storages/session_projcache/sessions/<id>.json`，内嵌日志绝对路径）漏了表现为
+`corrupt session log` 且 workspaceRegistry **整棵拒绝激活**（P10）。逐会话记录的日志路径
+改写由 apply 的幂等复制顺带返回的分组改名清单驱动 —— 必须用 bundle 侧旧分组名，目标机扫
+出来的 plan 是「已改名后」的口径，对不上旧名字。
+
+路径形态同步修正（P4 / P11）：映射**输出**统一转平台原生形态（新增 `path-map.toNativeForm`）
+—— 宿主 attach 校验把 `realpathNormalize(header.cwd)` 与 `record.path` **逐字比较**，重映射后
+写成正斜杠的 record.path 必报 `workspace-attach-failed`。匹配侧本就归一化（盘符大小写不敏感、
+正反斜杠等价），实测数据里的 `e:\...` 杂讯形态现在也能命中。
+
+### 重复 session id：写盘前整体拦截（P5）
+
+源机项目搬过家时旧目录会残留旧会话，导出把两个分组都带上，落地重映射后同一 session id 出现在
+两个分组 —— 宿主报 `duplicate JSONL session id` 并拖垮整棵服务树（workspaceRegistry →
+sessionController → schedule 全 pending），表现为「迁移显示成功但什么都打不开」。
+`scanSessions` 现在跨分组查重（按 header.id，缺失时退回目录名），**apply 在动第一个字节之前**
+扫 bundle 预检，发现重复整体拦下并给出处置建议；落地后的扫描同样把 error 级问题送进 errors
+而不是 warnings。
+
+### 依赖与凭据：「必办」取代「叮嘱」（P1 / P2）
+
+实测推翻了 README 的旧说法：**宿主重启不会自动按新 package.json 重装 node_modules**——apply
+覆写声明后重启，全部插件「异常 / 包不可用」，宿主不报任何错。apply 现在逐个落地过的 profile
+比对「声明 vs node_modules 实有」，缺包进新的 `actionRequired`（必办）清单并排在 nextSteps
+第一位；凭据未落地（bundle 含加密凭据但未给口令）同样进必办，不再是可以无视的 warning。
+`plugins/node_modules → profiles/<p>/node_modules` 联接由 apply 自动创建（P6：vendored 插件
+靠上级目录解析 schemastery 等共享包，落进 `.dsh/plugins/` 后解析链上没有任何一层有它）。
+
+### 新工具 `dshsync_remap`（P8）
+
+迁移完成后用户把工作区挪盘、把项目挪进子目录 —— dsh 全挂，而 apply 需要 bundle（那是迁移前的
+旧路径）帮不上忙。`dshsync_remap(dshHome, mappings, dryRun)` 对**本机现状**就地改写上述五个
+落点，映射必填、dryRun 先行、幂等可重跑；注册表 / 快捷方式 / 应用安装位置超出范围，明确提示
+自行同步。
+
+### verify 增项与强化（P12 / P4 / P10）
+
+- **I14 projcache 身份残留**：session_projcache 两层里还有指向源机 home 的路径 → FAIL
+  （这是 corrupt session log 的确定前兆，不是提示）。
+- **I8 补强**：workspace.json 注册了但目录缺失的工作区单独点名（可能一个会话都没有，
+  但宿主 attach 照样报错），给出「建空占位 / 移除注册」两条出路。
+- **I5 补逐字形态**：record.path 不是平台原生形态时单独 WARN（normalize 相等不等于逐字相等，
+  P4 的坑 verify 此前看不见）。
+
+### GUIDANCE 修正
+
+补写五条宿主不变量速查（attach 逐字比较、分组名编码、projcache 双层互校、重复 id 级联、
+subagent 裸 UUID 目录形态），桌面版依赖重建的说法改为与实测一致。
+
+### 测试
+
+231 → 239。新增 8 条：原生形态输出（混形态源数据 `d:/...` 命中且输出 `E:\...`）、projcache
+双层随 apply 重映射（含杂讯形态记录与 I14 正反两向）、重复 id 零写入拦截、裸 UUID subagent
+会话不被漏掉、缺依赖与缺口令进必办、remap 五落点端到端与 dryRun/空映射守卫。
+
+
 ## 0.14.2 (2026-10-23)
 
 **README 重排:中文主文从 543 行压到 267 行。** 原来的结构是「先讲 147 行设计原理,第 190 行才开始讲

@@ -7,7 +7,7 @@
 
 - **三层一起走**:声明层(设置 / 凭据 / 插件源码)→ 状态层(会话 / 工作区记录 / skills / 附件)→ 可选的工作区代码。
 - **会话改不坏**:zstd 多帧日志只重写首帧里的 `cwd`,事件区逐字节原样保留。
-- **落地就核对**:14 项检查(I1–I13 另含 I6b)逐条给 PASS / FAIL / WARN,不是"应该没问题"。
+- **落地就核对**:15 项检查(I1–I14 另含 I6b)逐条给 PASS / FAIL / WARN,不是"应该没问题"。
 - **能再迁一次**:`merge=true` 先出分歧清单,未决议就停在写盘之前,不静默盖掉目标机这期间的新东西。
 
 两条路:手动搬 bundle(导出 → 拷 → 落地 → 核对),或**局域网直传**(配对后一条命令拉过去、自动落地并核验,不用 U 盘也不用网盘)。
@@ -26,7 +26,7 @@ dsh plugin --profile web add github:huangfuren/dsh-sync
 ```
 
 把 `web` 换成你实际使用的 profile(桌面端是 `desktop`)。**新旧两台机器都要装** —— 发送端与落地端
-都在这个包里。装完**重启 dsh**:7 个工具与 3 条同源路由都在启动时注册,不重启既看不见也调不到。
+都在这个包里。装完**重启 dsh**:8 个工具与 3 条同源路由都在启动时注册,不重启既看不见也调不到。
 
 也可以在插件市场(dsh-market)里搜 `dsh-sync`,从详情页一键安装。
 
@@ -179,6 +179,7 @@ dshsync_apply(..., merge=true, resolutions={
 | `dshsync_lan_discover` | 目标机 | 找局域网里开着的发送端。UDP 广播优先,逐地址扫描兜底。结果带 `id` 与序号,会被记住 |
 | `dshsync_lan_pull` | 目标机 | 配对 → 等确认 → 接收 → 落地 → 核验,一条命令。可用 `deviceId` 指定(或用卡片里选中的那台)。后台执行,立即返回 jobId |
 | `dshsync_lan_status` | 两端 | 查进度、速率、剩余时间,以及落地与核验的最终结果 |
+| `dshsync_remap` | 本机 | **迁移完成后目录又动了**的补救:就地重映射五个落点(会话首帧 cwd → 分组目录名 → workspace.json → projcache 两层 → 软链目标),不拷任何数据。支持 `dryRun` |
 
 `deviceId` 认 id / 1 基序号 / 别名 / IP 四种写法;`host` 与 `deviceId` 都不给时,用卡片里选中的那台。
 **一个都没选过就报错并说清三条路,不会替你挑** —— 把 bundle 传给错的一方不可挽回。唯一的例外是
@@ -250,7 +251,7 @@ bundle,后者若进表单就会明文落在 `settings.yaml` 里。它们仍然�
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 231 个测试
+npm test        # 239 个测试
 npm run verify
 ```
 
@@ -432,7 +433,7 @@ dsh-sync-bundle/
 <details>
 <summary><b>桌面版与 web 宿主</b></summary>
 
-同一个插件、同样七个工具:这里没有客户端半,也不需要构建链,所以桌面版与 web 宿主的加载路径完全一样。
+同一个插件、同样八个工具:这里没有客户端半,也不需要构建链,所以桌面版与 web 宿主的加载路径完全一样。
 真正不同的是下面两件事,两件都踩过:
 
 **① 你在用的 profile 不一定是 `web`。** 桌面版加载的是 `profiles/desktop`;只装进 `profiles/web` 的
@@ -464,7 +465,7 @@ pnpm 11.7.0,时间停在十天前。拿陈旧快照比对,会让「换到刚装�
 dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 ```
 
-逐条核对 14 项检查(I1–I13,其中 I6 另含子项 I6b),每项给 PASS / FAIL / WARN:
+逐条核对 15 项检查(I1–I14,其中 I6 另含子项 I6b),每项给 PASS / FAIL / WARN:
 
 | ID | 核对内容 |
 |---|---|
@@ -482,6 +483,7 @@ dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 | I11 | 宿主运行时一致(dsh 版本 / 平台 / 架构 / node 大版本);跨 `major.minor` 时插件会被启动时拒装 |
 | I12 | 工作区代码真的落地了(传 `workspaceRoot` 才核对;不传只报 WARN,不猜) |
 | I13 | 落地后回写:apply 写入的 settings / 凭据 / workspace.json 自落地起未被宿主写回盖掉(依据落地回执 `.dsh-sync-apply-receipt.json`;宿主原样重写不算,内容变了才 FAIL) |
+| I14 | projcache 身份残留:session_projcache 两层(dump + 逐会话记录)里不再有指向源机 home 的日志路径 —— 残留即宿主报 `corrupt session log` 并整棵拒绝激活 workspaceRegistry |
 
 I11 判 `WARN` 而不是 `FAIL`:换机顺带升级 dsh 是正当操作,不该被工具拦下。但它挡的是最阴的一种失败 ——
 宿主启动时做 peer 兼容性裁决,版本对不上时插件是 `stays installed but startup denies it`:

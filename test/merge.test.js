@@ -19,6 +19,7 @@ import {
   diffPluginDecls, mergePluginDecls, mergeWorkspaceRecords, unresolvedOf, planMerge, SESSION_POLICIES,
 } from '../lib/merge-plan.js'
 
+const nativeOf = (p) => (process.platform === 'win32' ? String(p).split('/').join(path.sep) : p)
 const HAS_ZSTD = zstdAvailable()
 
 function tmpDir(tag) {
@@ -329,7 +330,7 @@ test('会话策略 prefer-source 会覆盖目标机的版本，skip 则一个不
   assert.equal(fs.existsSync(path.join(b.s1Dir, 'session.v3.jsonl.zstd')), true)
   // 改写管线随后会把补进来 / 覆盖过来的日志 header 改成目标机路径
   const read = readSessionHeader(path.join(b.s1Dir, 'session.v3.jsonl.zstd'))
-  assert.equal(read.ok && read.header.cwd, 'E:/moved/proj-a')
+  assert.equal(read.ok && read.header.cwd, nativeOf('E:/moved/proj-a'))
 })
 
 test('merge=false 时行为与旧版一致：直接覆盖，不出冲突清单', { skip: !HAS_ZSTD }, async () => {

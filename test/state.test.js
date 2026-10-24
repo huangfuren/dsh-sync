@@ -19,10 +19,15 @@ import { scanLinks, linkWarnings } from '../lib/link-scan.js'
 import { exportBundle } from '../lib/bundle.js'
 import { applyBundle, verifyBundleIntegrity, inspectBundle, rebuildLinks } from '../lib/apply-engine.js'
 import { runVerify } from '../lib/verify-engine.js'
+import { remapHome } from '../lib/remap-engine.js'
 
 const HAS_ZSTD = zstdAvailable()
 
 // ── 合成助手 ────────────────────────────────────────────────────────────────
+// 映射输出的统一形态是平台原生的（宿主逐字比较 record.path，见 path-map.toNativeForm）。
+// 断言映射产物的路径一律过这里，测试本身在 Windows / POSIX 都能跑。
+const nativeOf = (p) => (process.platform === 'win32' ? String(p).split('/').join(path.sep) : p)
+
 function tmpDir(tag) {
   const d = path.join(os.tmpdir(), `dshsync-test-${tag}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`)
   fs.mkdirSync(d, { recursive: true })
@@ -79,13 +84,13 @@ test('applyMappings 只在段边界命中', () => {
   // D:/deep 不能吃到 D:/deepseek/...
   assert.equal(applyMappings('D:/deepseek/dsh-chat', [{ from: 'D:/deep', to: 'E:/x' }]), null)
   const hit = applyMappings('D:/deepseek/dsh-chat', [{ from: 'D:/deepseek', to: 'E:/code' }])
-  assert.equal(hit.path, 'E:/code/dsh-chat')
+  assert.equal(hit.path, nativeOf('E:/code/dsh-chat'))
   assert.deepEqual(hit.rule, { from: 'D:/deepseek', to: 'E:/code' })
 })
 
 test('applyMappings 按顺序首条命中即返回（不自作最长前缀）', () => {
   const r = applyMappings('D:/a/b', [{ from: 'D:/a', to: 'E:/1' }, { from: 'D:/a/b', to: 'F:/2' }])
-  assert.equal(r.path, 'E:/1/b')
+  assert.equal(r.path, nativeOf('E:/1/b'))
 })
 
 test('applyMappings 等价映射视为未命中', () => {
@@ -302,7 +307,7 @@ test('applySessionPlan 改 header 并重命名分组，dryRun 不落盘', { skip
   assert.ok(!fs.existsSync(path.join(home, 'sessions', '--D-deepseek-dsh-chat--')))
   for (const sid of ['a1', 'a2']) {
     const h = readSessionHeader(path.join(newGroup, sid, 'session.jsonl.zstd'))
-    assert.equal(h.header.cwd, 'E:/moved/dsh-chat')
+    assert.equal(h.header.cwd, nativeOf('E:/moved/dsh-chat'))
     assert.equal(h.header.id, sid)
   }
   fs.rmSync(home, { recursive: true, force: true })
@@ -314,7 +319,7 @@ test('remapWorkspacePaths 返回新对象且不改入参', () => {
   const { json, changes } = remapWorkspacePaths(doc, [{ from: 'D:/deepseek', to: 'E:/moved' }])
   assert.equal(JSON.stringify(doc), snapshot, '入参不得被修改')
   assert.equal(changes.length, 1)
-  assert.equal(json.tables.workspaces.w1.path, 'E:/moved/dsh-chat')
+  assert.equal(json.tables.workspaces.w1.path, nativeOf('E:/moved/dsh-chat'))
   assert.equal(json.tables.workspaces.w2.path, 'D:\\other')
 })
 
@@ -418,12 +423,12 @@ test('全链路：导出 → 落地 → 核对（含路径重映射）', { skip:
   const keptGroup = path.join(dst, 'sessions', encodeSessionDir('D:\\program\\docs'))
   assert.ok(fs.existsSync(movedGroup), '命中映射的分组应改名到新编码目录')
   assert.ok(fs.existsSync(keptGroup), '未命中映射的分组应保持原名')
-  assert.equal(readSessionHeader(path.join(movedGroup, 'x1', 'session.jsonl.zstd')).header.cwd, 'E:/moved/dsh-chat')
+  assert.equal(readSessionHeader(path.join(movedGroup, 'x1', 'session.jsonl.zstd')).header.cwd, nativeOf('E:/moved/dsh-chat'))
   assert.equal(readSessionHeader(path.join(keptGroup, 'y1', 'session.jsonl.zstd')).header.cwd, 'D:\\program\\docs')
 
   // workspace.json 同步改写
   const ws = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'workspace.json'), 'utf8'))
-  assert.equal(ws.tables.workspaces.w1.path, 'E:/moved/dsh-chat')
+  assert.equal(ws.tables.workspaces.w1.path, nativeOf('E:/moved/dsh-chat'))
   assert.equal(ws.tables.workspaces.w2.path, 'D:\\program\\docs', '未命中映射的工作区路径不得被动')
 
   // ④ 核对全 PASS
@@ -773,7 +778,7 @@ test('会话日志的三种文件名（无版本 / v3 / v4）都要识别并改�
     const g = path.join(home, 'sessions', encodeSessionDir(newCwd), id)
     assert.ok(fs.existsSync(g), '分组目录应改名到新编码：' + newCwd)
     for (const name of fs.readdirSync(g)) {
-      assert.equal(readSessionHeader(path.join(g, name)).header.cwd, newCwd, name + ' 的 cwd 未改写')
+      assert.equal(readSessionHeader(path.join(g, name)).header.cwd, nativeOf(newCwd), name + ' 的 cwd 未改写')
     }
   }
   fs.rmSync(home, { recursive: true, force: true })
@@ -805,7 +810,7 @@ test('同一会话里只有部分日志可改写时，坏的那份逐字节不�
   assert.equal(applied.failed, 0)
   const moved = path.join(home, 'sessions', encodeSessionDir('E:/moved/mix'), 'p1')
   assert.ok(fs.existsSync(path.join(moved, 'session.jsonl.zstd')), '干净的那份跟着分组目录改名')
-  assert.equal(readSessionHeader(path.join(moved, 'session.jsonl.zstd')).header.cwd, 'E:/moved/mix')
+  assert.equal(readSessionHeader(path.join(moved, 'session.jsonl.zstd')).header.cwd, nativeOf('E:/moved/mix'))
   // 撕裂的那份只被 rename 带走，字节一个没动（断言的是「没被改写」，不是「被删掉」）
   assert.deepEqual(fs.readFileSync(path.join(moved, 'session.v3.jsonl.zstd')), tornBytes,
     '撕裂的日志必须逐字节不动')
@@ -1034,4 +1039,257 @@ test('空壳自检：无会话无工作区的导出要报警，有历史的不�
   })
   assert.ok(!r3.warnings.some((w) => w.where === 'direction'), '没扫状态层就不能断言空壳：'
     + JSON.stringify(r3.warnings))
+})
+
+// ══ 0.15.0：迁移复盘 P1-P12 的回归用例 ════════════════════════════════════════
+
+/** 造一套与宿主同形的 session_projcache（双层：单元 dump + 逐会话记录）。 */
+function mkProjCache(dshHome, entries) {
+  const dump = { unit: { name: 'session_projcache', version: 3 }, global: { initialized: true }, tables: { sessions: {} } }
+  const recDir = path.join(dshHome, 'storages', 'session_projcache', 'sessions')
+  fs.mkdirSync(recDir, { recursive: true })
+  for (const [id, cwd, logPath] of entries) {
+    dump.tables.sessions[id] = { identity: { cwd, sessionId: id }, updatedAt: 1700000000000 }
+    fs.writeFileSync(path.join(recDir, id + '.json'),
+      JSON.stringify({ generation: 1, identity: { cwd, sessionId: id }, files: [logPath] }, null, 2))
+  }
+  fs.mkdirSync(path.join(dshHome, 'storages'), { recursive: true })
+  fs.writeFileSync(path.join(dshHome, 'storages', 'session_projcache.json'), JSON.stringify(dump, null, 2))
+}
+
+function mkProfileWithDeps(home, deps) {
+  const prof = path.join(home, 'profiles', 'desktop')
+  fs.mkdirSync(prof, { recursive: true })
+  fs.writeFileSync(path.join(prof, 'package.json'),
+    JSON.stringify({ name: 'p', version: '1.0.0', dependencies: deps, dsh: { profile: { bundles: [] } } }))
+  return prof
+}
+
+test('P4/P11：映射输出统一 Win32 原生形态（宿主逐字比较 record.path）', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('native-form')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  // 源数据刻意混形态：正斜杠 + 小写盘符 —— 匹配必须归一化命中，输出必须原生
+  mkSession(src, 'd:/deepseek/proj', 'f1')
+  mkWorkspace(src, [['w1', 'D:\\deepseek\\proj']])
+  mkProfileWithDeps(src, {})
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'E:/code' }], onLog: () => {},
+  })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  if (process.platform === 'win32') {
+    const { header } = readSessionHeader(
+      path.join(dst, 'sessions', encodeSessionDir('E:\\code\\proj'), 'f1', 'session.jsonl.zstd'))
+    assert.equal(header.cwd, 'E:\\code\\proj', '首帧 cwd 必须是原生反斜杠，实际：' + header.cwd)
+    const ws = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'workspace.json'), 'utf8'))
+    assert.equal(ws.tables.workspaces.w1.path, 'E:\\code\\proj', 'record.path 必须是原生反斜杠，实际：' + ws.tables.workspaces.w1.path)
+  }
+  // 原生形态下 I5 的逐字检查应当全绿
+  const v = await runVerify(bundle, dst)
+  assert.equal(v.checks.find((c) => c.id === 'I5').status, 'PASS', v.checks.find((c) => c.id === 'I5').detail)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P3/P10：projcache 双层随 apply 重映射，dump/记录/源机残留三个口径全对', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('projcache')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  mkSession(src, 'D:\\deepseek\\proj', 's1')
+  mkProfileWithDeps(src, {})
+  // 记录里嵌源机日志绝对路径；一条刻意用小写盘符 + 正斜杠（P11 的杂讯形态）
+  const srcLog = path.join(src, 'sessions', encodeSessionDir('D:\\deepseek\\proj'), 's1', 'session.v3.jsonl.zstd')
+  mkProjCache(src, [
+    ['s1', 'D:\\deepseek\\proj', srcLog],
+    ['s2', 'd:/deepseek/proj', srcLog.split(path.sep).join('/').replace('D:', 'd:')],
+  ])
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'E:/code' }], onLog: () => {},
+  })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  assert.ok(applied.projcache.dump.present, 'dump 应存在并被处理')
+  assert.equal(applied.projcache.dump.strings, 2, 'dump 里两条 cwd 都应命中')
+
+  const newGroup = encodeSessionDir('E:\\code\\proj')
+  const newLog = path.join(dst, 'sessions', newGroup, 's1', 'session.v3.jsonl.zstd')
+  const dump = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache.json'), 'utf8'))
+  assert.equal(dump.tables.sessions.s1.identity.cwd, 'E:\\code\\proj')
+  assert.equal(dump.tables.sessions.s2.identity.cwd, 'E:\\code\\proj', '小写盘符正斜杠形态也要命中')
+  const rec = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's1.json'), 'utf8'))
+  assert.equal(rec.files[0], newLog, '记录里的日志路径必须指向本机新位置，实际：' + rec.files[0])
+  const rec2 = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's2.json'), 'utf8'))
+  assert.equal(rec2.files[0], newLog, '杂讯形态的记录也要命中，实际：' + rec2.files[0])
+
+  // I14：无残留则 PASS；手工放回一条源机路径则 FAIL（宿主 corrupt session log 的前兆）
+  const v1 = await runVerify(bundle, dst)
+  assert.equal(v1.checks.find((c) => c.id === 'I14').status, 'PASS', v1.checks.find((c) => c.id === 'I14').detail)
+  rec2.files[0] = srcLog
+  fs.writeFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's2.json'), JSON.stringify(rec2))
+  const v2 = await runVerify(bundle, dst)
+  const i14 = v2.checks.find((c) => c.id === 'I14')
+  assert.equal(i14.status, 'FAIL')
+  assert.match(i14.detail, /corrupt session log|源机/)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P5：跨分组重复 session id 的 bundle 在写盘前被整体拦截', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('dup-id')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  // 同一个 header id 出现在两个分组（源机项目搬家后旧目录残留的典型现场）
+  mkSession(src, 'D:\\deepseek\\new-home', 'dup1')
+  mkSession(src, 'D:\\deepseek\\old-home', 'dup1')
+  mkProfileWithDeps(src, {})
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'E:/code' }], onLog: () => {},
+  })
+  assert.equal(applied.ok, false, '重复 id 必须整体失败')
+  assert.ok(applied.errors.some((e) => /重复 session id/.test(e)), JSON.stringify(applied.errors))
+  assert.equal(applied.backupDir, null, '零写入：连备份目录都不建')
+  assert.ok(!fs.existsSync(path.join(dst, 'sessions')), '不得落地会话')
+  assert.ok(!fs.existsSync(path.join(dst, 'settings.yaml')), '不得落地声明层')
+
+  // scanSessions 本身也要报出 error 级问题（导出报告用）
+  const scan = await scanSessions(src)
+  assert.ok(scan.problems.some((p) => p.level === 'error' && /重复 session id/.test(p.message)))
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P9：裸 UUID 的 subagent 会话目录不被漏掉，首帧照常改写', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('subagent-uuid')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  const uuid = '476b853e-89d4-4f0a-9c1e-0a1b2c3d4e5f'
+  // subagent 会话：目录名是裸 UUID（不是 session-<uuid>），header 带 origin/parentSession
+  writeSessionFile(
+    path.join(src, 'sessions', encodeSessionDir('D:\\deepseek\\proj'), uuid, 'session.v3.jsonl.zstd'),
+    { type: 'session', version: 3, id: 'sub-' + uuid.slice(0, 8), origin: 'subagent', parentSession: 'p1', cwd: 'D:\\deepseek\\proj' },
+    ['{"seq":1}'])
+  mkSession(src, 'D:\\deepseek\\proj', 'main1')
+  mkProfileWithDeps(src, {})
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'E:/code' }], onLog: () => {},
+  })
+  assert.equal(applied.ok, true, JSON.stringify(applied.errors))
+  const h = readSessionHeader(path.join(dst, 'sessions', encodeSessionDir('E:\\code\\proj'), uuid, 'session.v3.jsonl.zstd'))
+  assert.ok(h.ok, '裸 UUID 目录里的日志必须跟着分组走')
+  assert.equal(h.header.cwd, 'E:\\code\\proj', 'subagent 首帧 cwd 必须被改写，漏掉就是 corrupt session log')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P1：声明了依赖但 node_modules 缺包 → 必办项点名，nextSteps 置顶', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('deps-missing')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  mkSession(src, 'D:\\deepseek\\proj', 's1')
+  mkProfileWithDeps(src, { '@deepseek-ai/schemastery': '^3.18.1', '@deepseek-ai/dsh-tools': '0.1.0-rc.6' })
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'E:/code' }], onLog: () => {},
+  })
+  assert.equal(applied.ok, true, '缺依赖不判失败（落地本身成功），但必须进必办：' + JSON.stringify(applied.errors))
+  const dep = applied.actionRequired.find((a) => a.startsWith('[依赖]'))
+  assert.ok(dep, JSON.stringify(applied.actionRequired))
+  assert.match(dep, /宿主重启不会自动重装/)
+  assert.ok(applied.nextSteps[0].startsWith('必办 [依赖]'), '必办项必须排在 nextSteps 第一位：' + applied.nextSteps[0])
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P2：bundle 含加密凭据但 apply 未给口令 → 必办项点名', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('cred-missing')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  mkSession(src, 'D:\\deepseek\\proj', 's1')
+  mkProfileWithDeps(src, {})
+  fs.writeFileSync(path.join(src, '.credentials.yaml'), 'deepseek: apiKeyEnv: DS_KEY\n')
+  fs.writeFileSync(path.join(src, 'settings.yaml'), 'theme: dark\n')
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({
+    dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true,
+    includeCredentials: true, passphrase: '88888888', onLog: () => {},
+  })
+  const applied = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'D:/deepseek', to: 'E:/code' }], onLog: () => {},
+  })
+  const cred = applied.actionRequired.find((a) => a.startsWith('[凭据]'))
+  assert.ok(cred, '凭据未落地必须进必办：' + JSON.stringify(applied.actionRequired))
+  assert.match(cred, /credentialPassphrase/)
+  assert.ok(!fs.existsSync(path.join(dst, '.credentials.yaml')))
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P8：dshsync_remap 就地重映射五个落点（迁移后目录又动了）', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('remap')
+  const src = path.join(root, 'src')
+  const dst = path.join(root, 'dst')
+  const bundle = path.join(root, 'bundle')
+  mkSession(src, 'E:\\code\\proj', 's1')
+  mkWorkspace(src, [['w1', 'E:\\code\\proj']])
+  mkProfileWithDeps(src, {})
+  fs.mkdirSync(dst, { recursive: true })
+  await exportBundle({ dshHome: src, profiles: ['desktop'], outDir: bundle, includeState: true, onLog: () => {} })
+  const first = await applyBundle({
+    bundleDir: bundle, dshHome: dst, mappings: [{ from: 'E:/code', to: 'E:/code' }], onLog: () => {},
+  })
+  assert.equal(first.ok, true, JSON.stringify(first.errors))
+  // 迁移完成后的本机 projcache：记录指向 E:\code 时代的日志路径
+  const logAt = path.join(dst, 'sessions', encodeSessionDir('E:\\code\\proj'), 's1', 'session.jsonl.zstd')
+  mkProjCache(dst, [['s1', 'E:\\code\\proj', logAt]])
+
+  // 用户把工作区从 E 盘挪到 D 盘
+  const r = await remapHome({
+    dshHome: dst, mappings: [{ from: 'E:/code', to: 'D:/work' }],
+    onLog: () => {},
+  })
+  assert.equal(r.ok, true, JSON.stringify(r.errors))
+  assert.equal(r.sessions.rewritten, 1, JSON.stringify(r.sessions))
+
+  const { header } = readSessionHeader(path.join(dst, 'sessions', encodeSessionDir('D:\\work\\proj'), 's1', 'session.jsonl.zstd'))
+  assert.equal(header.cwd, 'D:\\work\\proj', '首帧 cwd 应改到新位置')
+  const ws = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'workspace.json'), 'utf8'))
+  assert.equal(ws.tables.workspaces.w1.path, 'D:\\work\\proj')
+  const rec = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's1.json'), 'utf8'))
+  assert.equal(rec.files[0],
+    path.join(dst, 'sessions', encodeSessionDir('D:\\work\\proj'), 's1', 'session.jsonl.zstd'),
+    '逐会话记录的日志路径要跟着分组改名走，实际：' + rec.files[0])
+  const dump = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache.json'), 'utf8'))
+  assert.equal(dump.tables.sessions.s1.identity.cwd, 'D:\\work\\proj')
+
+  // remap 后 verify 的 I3（目录名=编码）与 I5（逐字形态）都应全绿
+  const v = await runVerify(bundle, dst)
+  assert.equal(v.checks.find((c) => c.id === 'I3').status, 'PASS', v.checks.find((c) => c.id === 'I3').detail)
+  assert.equal(v.checks.find((c) => c.id === 'I5').status, 'PASS', v.checks.find((c) => c.id === 'I5').detail)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('P8：remap 拒绝空映射，dryRun 不写盘', { skip: !HAS_ZSTD }, async () => {
+  const root = tmpDir('remap-guard')
+  const home = path.join(root, 'home')
+  mkSession(home, 'D:\\x', 's1')
+  const noMap = await remapHome({ dshHome: home, mappings: [], onLog: () => {} })
+  assert.equal(noMap.ok, false)
+  assert.ok(noMap.errors.some((e) => /显式 mappings/.test(e)))
+
+  const dry = await remapHome({ dshHome: home, mappings: [{ from: 'D:/x', to: 'E:/y' }], dryRun: true, onLog: () => {} })
+  assert.equal(dry.ok, true)
+  assert.equal(dry.sessions.rewritten, 1)
+  assert.ok(fs.existsSync(path.join(home, 'sessions', encodeSessionDir('D:\\x'), 's1', 'session.jsonl.zstd')),
+    'dryRun 不得改名')
+  assert.equal(dry.backupDir, null, 'dryRun 不建备份目录')
+  fs.rmSync(root, { recursive: true, force: true })
 })

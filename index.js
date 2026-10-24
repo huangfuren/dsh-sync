@@ -12,6 +12,7 @@ import { defineLanHostTool } from './lib/tools/lan-host.js'
 import { defineLanPullTool } from './lib/tools/lan-pull.js'
 import { defineLanStatusTool } from './lib/tools/lan-status.js'
 import { defineLanDiscoverTool } from './lib/tools/lan-discover.js'
+import { defineRemapTool } from './lib/tools/remap.js'
 import { registerMigrateRoute } from './lib/migrate.js'
 import { registerDevicesRoute, registerOverviewRoute } from './lib/status.js'
 
@@ -153,14 +154,39 @@ A gap within the same \`major.minor\` is a soft warning (patch-level lag is norm
 names the waiver you will need. Unknown on either side is "needs manual confirmation", never silently passed.
 
 ### Desktop app vs web host
-Same plugin, same seven tools: this is a host-only plugin (no client half, no build step), so the loading
+Same plugin, same eight tools (dshsync_remap included): this is a host-only plugin (no client half, no build step), so the loading
 path is identical in both. Two things genuinely differ, and both have bitten:
 - **The profile you actually run is not necessarily \`web\`.** The desktop app loads \`profiles/desktop\`;
   a plugin installed only into \`profiles/web\` is simply absent from the UI. That is why \`profile\` defaults
   to \`"*"\` here, and why you should install this plugin into the profile you really use.
 - **There is no \`pnpm\` or \`dsh\` on PATH on a desktop machine.** The app ships its own pnpm internally.
-  Never tell a desktop user to run \`pnpm install\`: land the profile files and let the app reconcile them on
-  the next start; if the plugin list comes up empty, reinstall/repair once from the plugin manager.
+  Reinstalling dependencies is YOUR job after apply: the host does NOT rebuild \`node_modules\` from the new
+  \`package.json\` on restart — it just fails to load every plugin with no error (all show 包不可用). Use the
+  pnpm shipped in the app runtime (在安装目录 resources/runtime/primary-runtime/dependencies/ 下) in the
+  profile directory, or the plugin manager's 重新安装/修复. apply reports missing dependencies as 必办 items.
+
+### After directories moved post-migration: dshsync_remap
+If a migration completed but the directories moved afterwards (workspaces to another drive, projects into a
+subfolder), \`dshsync_apply\` cannot help — it needs a bundle of the OLD paths. Use \`dshsync_remap\` on THIS
+machine: it rewrites in place all FIVE identity sites with one mapping rule set — session header cwd, session
+group dir names, workspace.json record paths, session_projcache (unit dump AND per-session records whose
+embedded absolute log paths the host cross-checks against the logs), and symlink/junction targets. Always
+\`dryRun=true\` first. It never copies data; it only rewrites paths of what already exists. Missing any one of
+the five sites means the host's whole service tree refuses to activate (corrupt session log / duplicate
+session id), so hand-fixing is what created the need for this tool.
+
+### Session-identity invariants the host enforces (why the five sites above are all-or-nothing)
+1. \`realpathNormalize(header.cwd)\` must equal the workspace.json \`record.path\` verbatim and the directory
+   must exist — otherwise new sessions fail to attach (\`workspace-attach-failed\`).
+2. The group dir name must equal \`encode(header.cwd)\`.
+3. Per-session records (\`storages/session_projcache/sessions/<id>.json\`) embed the log's absolute path;
+   any stale path there = \`corrupt session log\` and workspaceRegistry refuses to activate.
+4. One session id must not appear in more than one group dir — duplicates crash workspaceRegistry and cascade
+   (sessionController / schedule all pending). apply refuses a bundle containing duplicates BEFORE writing;
+   the fix is on the SOURCE: move one side out of sessions/ and re-export.
+5. Any violation is not "one broken session" — it cascades. Subagent sessions live in BARE-UUID dirs (no
+   \`session-\` prefix) and have \`"origin":"subagent"\` headers; every traversal must treat any directory
+   under a group as a session dir.
 
 ### Secrets
 \`.credentials.yaml\` holds live keys and is excluded unless \`includeCredentials=true\`. Pass
@@ -380,7 +406,7 @@ export function apply(ctx, config = {}) {
     if (typeof ctx.tools?.register !== 'function') {
       report(ctx, 'tools.register API changed; dsh-sync tools not registered')
     } else {
-      // 七个工具各自独立 try/catch：某一支注册失败不应连累其它支
+      // 八个工具各自独立 try/catch：某一支注册失败不应连累其它支
       // （导出端能跑、接收端不能跑，总比全都没了强）。
       for (const [label, factory] of [
         ['dshsync_export', defineExportTool],
@@ -390,6 +416,7 @@ export function apply(ctx, config = {}) {
         ['dshsync_lan_pull', defineLanPullTool],
         ['dshsync_lan_status', defineLanStatusTool],
         ['dshsync_lan_discover', defineLanDiscoverTool],
+        ['dshsync_remap', defineRemapTool],
       ]) {
         try {
           ctx.tools.register(factory(getConfig))

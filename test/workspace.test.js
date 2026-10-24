@@ -255,5 +255,7 @@ test('rebuildLinks 对映射后仍不存在的目标如实跳过并说明期望�
   })
   assert.equal(r.created, 0)
   assert.equal(r.skipped.length, 1)
-  assert.match(r.skipped[0].reason, /E:\/moved\/proj/)
+  // 映射输出是平台原生形态（path.sep），skip 理由里带的就是它
+  const expectTarget = 'E:/moved/proj'.split('/').join(path.sep)
+  assert.ok(r.skipped[0].reason.includes(expectTarget), r.skipped[0].reason)
 })
