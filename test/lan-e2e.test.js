@@ -13,6 +13,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { pullBundle, safeRelPath } from '../lib/lan/client.js'
+import { encryptBuffer } from '../lib/crypto.js'
 import { discoverDevices } from '../lib/lan/discovery.js'
 import { FRAME } from '../lib/lan/constants.js'
 import { readFrames } from '../lib/lan/frame.js'
@@ -392,6 +393,68 @@ test('端到端：UDP 广播能把本机起的发送端找回来（环境拦了�
     assert.equal(me.via, 'udp')
   } finally {
     await host.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('pullBundle：加密凭据带口令自动落地，不带则进必办（LAN 链路口令透传）', async () => {
+  const root = tmpDir('pull-pass')
+  const bundleDir = path.join(root, 'bundle')
+  const destDir = path.join(root, 'dest')
+  const dshHome = path.join(root, 'home')
+  fs.mkdirSync(dshHome, { recursive: true })
+  makeBundle(bundleDir)
+  // 加密凭据进包（并同步进 checksums 清单）
+  const enc = encryptBuffer(Buffer.from('deepseek: apiKeyEnv: DS_KEY\n', 'utf8'), '88888888')
+  fs.writeFileSync(path.join(bundleDir, '.credentials.enc'), enc)
+  const sumsPath = path.join(bundleDir, 'checksums.json')
+  const sums = JSON.parse(fs.readFileSync(sumsPath, 'utf8'))
+  sums.entries['.credentials.enc'] = sha256(enc)
+  fs.writeFileSync(sumsPath, JSON.stringify(sums, null, 2))
+
+  // ① 带口令：凭据应解密落地到 $DSH_HOME
+  const host = await startHost({ bundleDir, bind: '127.0.0.1', port: 0 })
+  const clicker = (async () => {
+    await new Promise((r) => setTimeout(r, 200))
+    await requestJson({ host: '127.0.0.1', port: host.port, method: 'POST', path: '/decide', json: { accept: true } })
+  })()
+  try {
+    const report = await pullBundle({
+      host: '127.0.0.1', port: host.port, code: host.code,
+      destDir, dshHome, passphrase: '88888888', onLog: () => {},
+    })
+    await clicker
+    assert.equal(report.ok, true, JSON.stringify(report.errors))
+    assert.ok(fs.existsSync(path.join(dshHome, '.credentials.yaml')), '带口令凭据应落地')
+    assert.equal(fs.readFileSync(path.join(dshHome, '.credentials.yaml'), 'utf8'), 'deepseek: apiKeyEnv: DS_KEY\n')
+    assert.ok(!report.apply.actionRequired.some((a) => a.startsWith('[凭据]')), '落地成功不应再报凭据必办')
+  } finally {
+    await host.close()
+    fs.rmSync(destDir, { recursive: true, force: true })
+    fs.rmSync(dshHome, { recursive: true, force: true })
+  }
+
+  // ② 不带口令：凭据不落地，必办点名（整包其余照常）
+  const dshHome2 = path.join(root, 'home2')
+  fs.mkdirSync(dshHome2, { recursive: true })
+  const host2 = await startHost({ bundleDir, bind: '127.0.0.1', port: 0 })
+  const clicker2 = (async () => {
+    await new Promise((r) => setTimeout(r, 200))
+    await requestJson({ host: '127.0.0.1', port: host2.port, method: 'POST', path: '/decide', json: { accept: true } })
+  })()
+  try {
+    const report2 = await pullBundle({
+      host: '127.0.0.1', port: host2.port, code: host2.code,
+      destDir, dshHome: dshHome2, onLog: () => {},
+    })
+    await clicker2
+    assert.equal(report2.ok, true, '凭据跳过不判整体失败：' + JSON.stringify(report2.errors))
+    assert.ok(!fs.existsSync(path.join(dshHome2, '.credentials.yaml')), '没口令凭据不得落地')
+    assert.ok(report2.apply.actionRequired.some((a) => a.startsWith('[凭据]')),
+      '必办要点名凭据：' + JSON.stringify(report2.apply.actionRequired))
+    assert.ok(report2.apply.nextSteps.some((x) => x.startsWith('必办 [凭据]')), 'nextSteps 第一屏要看到必办')
+  } finally {
+    await host2.close()
     fs.rmSync(root, { recursive: true, force: true })
   }
 })

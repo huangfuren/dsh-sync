@@ -191,8 +191,18 @@ session id), so hand-fixing is what created the need for this tool.
 ### Secrets
 \`.credentials.yaml\` holds live keys and is excluded unless \`includeCredentials=true\`. Pass
 \`credentialPassphrase\` (>= 6 chars) to carry settings + credentials as AES-256-GCM ciphertext; the same
-passphrase is required by \`dshsync_apply\`. Without it, literal keys are stripped from settings and must be
-re-entered on the target. Never echo secret values; only masked previews.
+passphrase is required by \`dshsync_apply\`, and can be carried by the LAN flow too (\`dshsync_lan_pull\`
+takes \`credentialPassphrase\`; the settings card has a per-run passphrase field) — it lives in memory for
+that run only: never saved, never logged. Without a passphrase, literal keys are stripped from settings and
+must be re-entered on the target. Never echo secret values; only masked previews.
+
+### Dependencies are your job — but the tooling now does the heavy lifting
+The host does NOT rebuild \`node_modules\` from the new \`package.json\` on restart. apply detects missing
+packages per landed profile and (by default, \`installDeps=true\`) runs \`pnpm install\` with the pnpm bundled
+in the host runtime — the path users could never find is derived from the running process. If that fails
+(the running host may lock native modules on Windows), a ready-to-run install script is generated at
+\`$DSH_HOME/.dsh-sync-install-deps.ps1\` (+ \`.sh\`): fully exit dsh, run it, reopen. Either way the
+action-required list names exactly what happened; a successful auto-install still says to restart dsh.
 
 ### Carrying the bundle
 Any transport works, but the bundle contains file trees: prefer a real copy over anything that flattens

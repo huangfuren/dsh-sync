@@ -67,7 +67,7 @@ window.__ModuleLoader__.load({
       includeStateHint: "sessions / storages / skills。不搬的话新机器能用但历史全空。",
       includePlugins: "携带 link: 插件源码",
       includePluginsHint: "把本地开发的插件源码一起打包，否则目标机上这些插件无法解析。",
-      secretNote: "凭据（.credentials.yaml）与加密口令不在这里配置：前者会明文落盘，后者会写进 settings.yaml。需要时在工具调用里传参。",
+      secretNote: "凭据（.credentials.yaml）不在这里保存——任何表单都不落密钥。下面的口令只用于本次迁移的解密，按次填写、不落盘。",
       readOnly: "当前设置只读。",
       save: "保存",
       saving: "保存中…",
@@ -133,6 +133,8 @@ window.__ModuleLoader__.load({
       migrateDestHint: "本机放 bundle 的目录，不能在 $DSH_HOME 内部",
       migrateRoot: "项目代码落到",
       migrateRootHint: "bundle 含工作区时必填；各项目按名字展开在这个目录下",
+      migratePass: "凭据口令（选填）",
+      migratePassHint: "导出时给了 credentialPassphrase 就填同一个；只在本次迁移的内存里用，不保存",
       migrateStart: "开始迁移",
       migrateStarting: "正在发起…",
       migrateNeedSelect: "先在上面选中一台设备",
@@ -168,7 +170,7 @@ window.__ModuleLoader__.load({
       includeStateHint: "sessions / storages / skills. Skip it and the target works but has no history.",
       includePlugins: "Carry link: plugin sources",
       includePluginsHint: "Bundle locally developed plugin sources, or the target cannot resolve those plugins.",
-      secretNote: "Credentials (.credentials.yaml) and the encryption passphrase are not configured here: the first would land in clear text, the second would be written into settings.yaml. Pass them as tool arguments when needed.",
+      secretNote: "Credentials (.credentials.yaml) are never saved in any form. The passphrase below is used in memory for this migration run only.",
       readOnly: "Settings are read-only here.",
       save: "Save",
       saving: "Saving…",
@@ -231,6 +233,8 @@ window.__ModuleLoader__.load({
       migrateDestHint: "Where the bundle lands on this machine; must not be inside $DSH_HOME",
       migrateRoot: "Project code lands in",
       migrateRootHint: "Required when the bundle carries workspaces; each project expands here under its own name",
+      migratePass: "Credential passphrase (optional)",
+      migratePassHint: "Same passphrase used at export. Used in memory for this run only — never saved",
       migrateStart: "Start migration",
       migrateStarting: "Starting…",
       migrateNeedSelect: "Select a machine above first",
@@ -525,7 +529,7 @@ window.__ModuleLoader__.load({
         React.createElement("input", {
           id: props.id,
           className: "dsh-sync-input",
-          type: "text",
+          type: props.inputType || "text",
           value: props.value,
           placeholder: props.placeholder || "",
           disabled: props.disabled,
@@ -865,6 +869,11 @@ window.__ModuleLoader__.load({
           key: "root", id: "dsh-sync-root", label: t("migrateRoot"), hint: t("migrateRootHint"),
           value: form.workspaceRoot, disabled: locked, onEdit: (value) => { props.onEdit("workspaceRoot", value); },
         }),
+        React.createElement(TextField, {
+          key: "pass", id: "dsh-sync-pass", label: t("migratePass"), hint: t("migratePassHint"),
+          inputType: "password",
+          value: form.passphrase || "", disabled: locked, onEdit: (value) => { props.onEdit("passphrase", value); },
+        }),
       ];
 
       let gate = null;
@@ -932,7 +941,7 @@ window.__ModuleLoader__.load({
       const [nonce, setNonce] = React.useState(0);
       const [dev, setDev] = React.useState({ status: "idle", data: null, error: "" });
       const [mig, setMig] = React.useState({ job: null, defaults: null, error: "", busy: false, progressUrl: "" });
-      const [migForm, setMigForm] = React.useState({ code: "", destDir: "", workspaceRoot: "" });
+      const [migForm, setMigForm] = React.useState({ code: "", destDir: "", workspaceRoot: "", passphrase: "" });
 
       React.useEffect(() => {
         if (!open) return undefined;
@@ -1006,6 +1015,7 @@ window.__ModuleLoader__.load({
           code: migForm.code,
           destDir: migForm.destDir,
           workspaceRoot: migForm.workspaceRoot,
+          passphrase: migForm.passphrase,
         }).then(
           (body) => setMig((s) => ({
             ...s,

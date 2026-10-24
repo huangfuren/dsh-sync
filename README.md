@@ -181,6 +181,8 @@ dshsync_apply(..., merge=true, resolutions={
 | `dshsync_lan_status` | 两端 | 查进度、速率、剩余时间,以及落地与核验的最终结果 |
 | `dshsync_remap` | 本机 | **迁移完成后目录又动了**的补救:就地重映射五个落点(会话首帧 cwd → 分组目录名 → workspace.json → projcache 两层 → 软链目标),不拷任何数据。支持 `dryRun` |
 
+| `dshsync_remap` | 本机 | **迁移完成后目录又动了**的补救:就地重映射五个落点(会话首帧 cwd → 分组目录名 → workspace.json → projcache 两层 → 软链目标),不拷任何数据。支持 `dryRun` |
+
 `deviceId` 认 id / 1 基序号 / 别名 / IP 四种写法;`host` 与 `deviceId` 都不给时,用卡片里选中的那台。
 **一个都没选过就报错并说清三条路,不会替你挑** —— 把 bundle 传给错的一方不可挽回。唯一的例外是
 「只发现一台、且你还没选过」,这时自动选中并在界面上标出来;**已经选过就绝不自动改选**。
@@ -251,7 +253,7 @@ bundle,后者若进表单就会明文落在 `settings.yaml` 里。它们仍然�
 
 ```bash
 npm run check   # node --check 全部源文件
-npm test        # 239 个测试
+npm test        # 247 个测试
 npm run verify
 ```
 
