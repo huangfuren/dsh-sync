@@ -173,7 +173,8 @@ dshsync_apply(..., merge=true, resolutions={
 | 工具 | 在哪跑 | 说明 |
 |---|---|---|
 | `dshsync_export` | 源机 | 导出 bundle。源机**只读**(只复制,从不改配置) |
-| `dshsync_apply` | 目标机 | 落地 + 工作区解包 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun`;`merge=true` 用于第二次及以后的迁移(先出分歧清单,未决即停) |
+| `dshsync_apply` | 目标机 | 落地 + 工作区解包 + 路径重映射 + 会话改写 + 软链重建。支持 `dryRun`;`merge=true` 用于第二次及以后的迁移(先出分歧清单,未决即停)。每一笔变动都记进落地账本 |
+| `dshsync_undo` | 目标机 | **后悔药**:按落地账本整体撤销最近一次 apply —— 新建的删、覆盖的从备份还原、软链还原旧指向、分组名改回去。落地之后内容变过的文件自动跳过并逐条报告。支持 `dryRun` |
 | `dshsync_verify` | 目标机 | 逐条核对一致性 |
 | `dshsync_lan_host` | 源机 | 起局域网发送端,给出配对码与进度页。`bundleDir` 缺省取配置的输出目录。`action="renew"` 换码、`action="stop"` 关停 |
 | `dshsync_lan_discover` | 目标机 | 找局域网里开着的发送端。UDP 广播优先,逐地址扫描兜底。结果带 `id` 与序号,会被记住 |
@@ -181,7 +182,15 @@ dshsync_apply(..., merge=true, resolutions={
 | `dshsync_lan_status` | 两端 | 查进度、速率、剩余时间,以及落地与核验的最终结果 |
 | `dshsync_remap` | 本机 | **迁移完成后目录又动了**的补救:就地重映射五个落点(会话首帧 cwd → 分组目录名 → workspace.json → projcache 两层 → 软链目标),不拷任何数据。支持 `dryRun` |
 
-| `dshsync_remap` | 本机 | **迁移完成后目录又动了**的补救:就地重映射五个落点(会话首帧 cwd → 分组目录名 → workspace.json → projcache 两层 → 软链目标),不拷任何数据。支持 `dryRun` |
+### 后悔了?dshsync_undo
+
+apply 把**每一笔**变动(新建 / 覆盖 / 软链 / 分组改名)记进备份目录里的落地账本(`journal.json`)。
+`dshsync_undo` 倒序回放:新建的删掉、覆盖的从备份还原、软链还原旧指向、分组名改回去。
+安全网是内容指纹:每笔操作记着「apply 写完那一刻」的 sha256,当前内容对不上的文件(典型是
+你已经继续用 dsh、会话追加了新帧)**绝不碰**,逐条报告 —— 撤销永远不会拿旧快照盖掉你新产生的数据。
+所以 apply 刚跑完就撤销是干净的全量回退;用过之后再撤销是"部分撤销 + 精确跳过清单"。
+缺省撤最近一次(回执定位);更早的备份在存在更新 apply 时拒绝撤销 —— 一层一层退。
+`dryRun=true` 先看。**删除备份目录 = 宣布这次迁移定稿**,账本随它一起消失。
 
 `deviceId` 认 id / 1 基序号 / 别名 / IP 四种写法;`host` 与 `deviceId` 都不给时,用卡片里选中的那台。
 **一个都没选过就报错并说清三条路,不会替你挑** —— 把 bundle 传给错的一方不可挽回。唯一的例外是

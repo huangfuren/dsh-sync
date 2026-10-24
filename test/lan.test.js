@@ -290,6 +290,7 @@ test('八个工具都能被宿主接受并注册（含 LAN 四个与 remap）', 
     'dshsync_lan_pull',
     'dshsync_lan_status',
     'dshsync_remap',
+    'dshsync_undo',
     'dshsync_verify',
   ])
   for (const t of registered) {

@@ -13,6 +13,7 @@ import { defineLanPullTool } from './lib/tools/lan-pull.js'
 import { defineLanStatusTool } from './lib/tools/lan-status.js'
 import { defineLanDiscoverTool } from './lib/tools/lan-discover.js'
 import { defineRemapTool } from './lib/tools/remap.js'
+import { defineUndoTool } from './lib/tools/undo.js'
 import { registerMigrateRoute } from './lib/migrate.js'
 import { registerDevicesRoute, registerOverviewRoute } from './lib/status.js'
 
@@ -139,6 +140,18 @@ A fresh target does not need \`merge\` — with nothing on the other side there 
 and a plain overwrite is simpler. Reach for it on the **second** migration, and say plainly which way each
 conflict went when you report back; do not quietly pick a side for the user.
 
+### Undoing an apply: dshsync_undo
+Every apply records a journal (\`journal.json\` inside its backup directory \`.dsh-sync-backup-<ts>/\`) of EVERY change it
+made: files created, files overwritten (the pre-state is the backup copy), symlinks created/replaced (old target recorded),
+session group dirs renamed. \`dshsync_undo\` replays it in reverse: created files are deleted, overwritten files are restored,
+links are removed or retargeted back, dirs renamed back. The safety rule is content-hash based: each entry remembers the hash
+of what apply WROTE, and a file whose current content no longer matches is LEFT ALONE and reported — you already used dsh on it
+(new session frames appended, host rewrote a config), and undo must never bury newer data under an older snapshot. That means
+undo right after apply is clean end-to-end; undo after real use is deliberately partial with a precise skip list. Default target
+is the LATEST apply (found via the receipt); older backups are refused while a newer apply exists — unwind one layer at a time.
+\`dryRun=true\` first. Deleting a backup directory is how you say "this migration is final": the journal lives there, so undo
+ability ends with it.
+
 ### Host version (the failure that hides from every file check)
 A bundle can be perfect and the target still show an empty plugin list: the host runs a peer-compatibility
 ruling at startup, and a version mismatch leaves every plugin \`stays installed but startup denies it\`.
@@ -154,7 +167,7 @@ A gap within the same \`major.minor\` is a soft warning (patch-level lag is norm
 names the waiver you will need. Unknown on either side is "needs manual confirmation", never silently passed.
 
 ### Desktop app vs web host
-Same plugin, same eight tools (dshsync_remap included): this is a host-only plugin (no client half, no build step), so the loading
+Same plugin, same nine tools (dshsync_remap and dshsync_undo included): this is a host-only plugin (no client half, no build step), so the loading
 path is identical in both. Two things genuinely differ, and both have bitten:
 - **The profile you actually run is not necessarily \`web\`.** The desktop app loads \`profiles/desktop\`;
   a plugin installed only into \`profiles/web\` is simply absent from the UI. That is why \`profile\` defaults
@@ -416,11 +429,12 @@ export function apply(ctx, config = {}) {
     if (typeof ctx.tools?.register !== 'function') {
       report(ctx, 'tools.register API changed; dsh-sync tools not registered')
     } else {
-      // 八个工具各自独立 try/catch：某一支注册失败不应连累其它支
+      // 九个工具各自独立 try/catch：某一支注册失败不应连累其它支
       // （导出端能跑、接收端不能跑，总比全都没了强）。
       for (const [label, factory] of [
         ['dshsync_export', defineExportTool],
         ['dshsync_apply', defineApplyTool],
+        ['dshsync_undo', defineUndoTool],
         ['dshsync_verify', defineVerifyTool],
         ['dshsync_lan_host', defineLanHostTool],
         ['dshsync_lan_pull', defineLanPullTool],
