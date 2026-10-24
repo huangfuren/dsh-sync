@@ -46,7 +46,9 @@ test('pickWorkspaceRoots 不把同名前缀当成父子关系', () => {
 
 test('pickWorkspaceRoots 统一反斜杠与盘符大小写后去重', () => {
   const roots = pickWorkspaceRoots(['D:/a/b', 'd:\\A\\b', 'D:/a/b/'])
-  assert.equal(roots.length, 1)
+  // Windows：盘符统一大写 + 比较键大小写不敏感 → 三条去成一条；
+  // POSIX：没有盘符概念，'D:/a/b' 与 'D:/A/b' 按大小写敏感就是两条 —— 这不是漏去重。
+  assert.equal(roots.length, process.platform === 'win32' ? 1 : 2)
 })
 
 test('pickWorkspaceRoots 忽略空值', () => {

@@ -1118,8 +1118,8 @@ test('P3/P10：projcache 双层随 apply 重映射，dump/记录/源机残留三
   const newGroup = encodeSessionDir('E:\\code\\proj')
   const newLog = path.join(dst, 'sessions', newGroup, 's1', 'session.v3.jsonl.zstd')
   const dump = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache.json'), 'utf8'))
-  assert.equal(dump.tables.sessions.s1.identity.cwd, 'E:\\code\\proj')
-  assert.equal(dump.tables.sessions.s2.identity.cwd, 'E:\\code\\proj', '小写盘符正斜杠形态也要命中')
+  assert.equal(dump.tables.sessions.s1.identity.cwd, nativeOf('E:/code/proj'))
+  assert.equal(dump.tables.sessions.s2.identity.cwd, nativeOf('E:/code/proj'), '小写盘符正斜杠形态也要命中')
   const rec = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's1.json'), 'utf8'))
   assert.equal(rec.files[0], newLog, '记录里的日志路径必须指向本机新位置，实际：' + rec.files[0])
   const rec2 = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's2.json'), 'utf8'))
@@ -1185,7 +1185,7 @@ test('P9：裸 UUID 的 subagent 会话目录不被漏掉，首帧照常改写',
   assert.equal(applied.ok, true, JSON.stringify(applied.errors))
   const h = readSessionHeader(path.join(dst, 'sessions', encodeSessionDir('E:\\code\\proj'), uuid, 'session.v3.jsonl.zstd'))
   assert.ok(h.ok, '裸 UUID 目录里的日志必须跟着分组走')
-  assert.equal(h.header.cwd, 'E:\\code\\proj', 'subagent 首帧 cwd 必须被改写，漏掉就是 corrupt session log')
+  assert.equal(h.header.cwd, nativeOf('E:/code/proj'), 'subagent 首帧 cwd 必须被改写，漏掉就是 corrupt session log')
   fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -1260,15 +1260,15 @@ test('P8：dshsync_remap 就地重映射五个落点（迁移后目录又动了�
   assert.equal(r.sessions.rewritten, 1, JSON.stringify(r.sessions))
 
   const { header } = readSessionHeader(path.join(dst, 'sessions', encodeSessionDir('D:\\work\\proj'), 's1', 'session.jsonl.zstd'))
-  assert.equal(header.cwd, 'D:\\work\\proj', '首帧 cwd 应改到新位置')
+  assert.equal(header.cwd, nativeOf('D:/work/proj'), '首帧 cwd 应改到新位置')
   const ws = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'workspace.json'), 'utf8'))
-  assert.equal(ws.tables.workspaces.w1.path, 'D:\\work\\proj')
+  assert.equal(ws.tables.workspaces.w1.path, nativeOf('D:/work/proj'))
   const rec = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache', 'sessions', 's1.json'), 'utf8'))
   assert.equal(rec.files[0],
     path.join(dst, 'sessions', encodeSessionDir('D:\\work\\proj'), 's1', 'session.jsonl.zstd'),
     '逐会话记录的日志路径要跟着分组改名走，实际：' + rec.files[0])
   const dump = JSON.parse(fs.readFileSync(path.join(dst, 'storages', 'session_projcache.json'), 'utf8'))
-  assert.equal(dump.tables.sessions.s1.identity.cwd, 'D:\\work\\proj')
+  assert.equal(dump.tables.sessions.s1.identity.cwd, nativeOf('D:/work/proj'))
 
   // remap 后 verify 的 I3（目录名=编码）与 I5（逐字形态）都应全绿
   const v = await runVerify(bundle, dst)
