@@ -38,11 +38,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # 刻意不做 install：本插件是纯 Node ESM，verify 的两步都不触达运行时依赖。
-      # - check 是 node --check（只解析语法，不解析 import）
-      # - test 是 node --test test/bundle.test.js（测试只 import lib/，而 schemastery
-      #   仅被 host 入口 index.js 使用）
-      # 这样 CI 不依赖 lockfile（本仓库未提交 lockfile）也不会被供应链环节拖慢。
+      # 安装依赖（无 lockfile，npm install 按区间解析）：0.9.0 起 lan.test.js 的「工具注册」
+      # 用例 import 了宿主入口 index.js，它需要 @deepseek-ai/schemastery（dependencies）与
+      # @deepseek-ai/dsh-tools（devDependencies + peer），干净环境缺包必报 ERR_MODULE_NOT_FOUND
+      # —— 0.8.0 到 0.14.2 的 CI 全因此红着。lib/ 下的引擎测试不触达这些包，装一次全绿。
+      - name: Install
+        run: npm install --no-audit --no-fund
+      # check 是 node --check（只解析语法，不解析 import）；test 是 node --test test/*.test.js。
       - name: Verify
         shell: bash
         run: |
