@@ -14,7 +14,7 @@ import test from 'node:test'
 
 import { pullBundle, safeRelPath } from '../lib/lan/client.js'
 import { encryptBuffer } from '../lib/crypto.js'
-import { discoverDevices } from '../lib/lan/discovery.js'
+import { discoverDevices, toDevice } from '../lib/lan/discovery.js'
 import { FRAME } from '../lib/lan/constants.js'
 import { readFrames } from '../lib/lan/frame.js'
 import { isPrivateAddress, loadBundleIndex, startHost } from '../lib/lan/host.js'
@@ -32,9 +32,14 @@ function sha256(buf) {
 }
 
 /** 造一个最小但结构真实的 bundle：有 manifest、有 checksums、有嵌套目录与二进制内容。 */
-function makeBundle(dir) {
+function makeBundle(dir, manifestExtra = {}) {
   const files = {
-    'manifest.json': JSON.stringify({ format: 'dsh-sync-bundle', formatVersion: 2, workspaces: [], profiles: [] }),
+    'manifest.json': JSON.stringify({
+      format: 'dsh-sync-bundle', formatVersion: 2, workspaces: [], profiles: [],
+      // 计数类测试按需注入（plugins/workspaces/state...）；默认 manifest 刻意不带
+      // workspaces —— 一旦带上，apply 就会要求 workspaceRoot，pull 全程会走不到头。
+      ...manifestExtra,
+    }),
     'settings.yaml': 'theme: dark\nlocale: zh-CN\n',
     'state/skills/alpha/SKILL.md': '# alpha\n',
     'state/sessions/abc/def/session.jsonl.zstd': Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 1, 2, 3, 4, 5]),
@@ -457,4 +462,144 @@ test('pullBundle：加密凭据带口令自动落地，不带则进必办（LAN 
     await host2.close()
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+// ── 0.18：一条龙（autoAccept）与内容摘要 ────────────────────────────────────
+
+test('/info 广播带内容计数与 autoAccept 标志（不带名字）', async () => {
+  const root = tmpDir('info')
+  const bundleDir = path.join(root, 'bundle')
+  makeBundle(bundleDir, {
+    plugins: [{ name: 'dsh-foo', files: 3, bytes: 456 }],
+    workspaces: [{ name: 'proj-a', sourcePath: 'D:/proj/a', bytes: 123, hasGit: true }],
+    state: { sessions: { total: 2, logFiles: 3 } },
+  })
+  const host = await startHost({ bundleDir, bind: '127.0.0.1', port: 0, autoAccept: true })
+  try {
+    const info = await requestJson({ host: '127.0.0.1', port: host.port, method: 'GET', path: '/info' })
+    assert.equal(info.json.autoAccept, true)
+    assert.equal(info.json.bundle.files > 0, true)
+    assert.equal(info.json.bundle.sessions, 2)
+    assert.equal(info.json.bundle.plugins, 1)
+    assert.equal(info.json.bundle.workspaces, 1)
+    assert.equal(info.json.bundle.encrypted, false)
+    // 名字不在 /info 里：计数可以公开，使用画像不行
+    assert.ok(!JSON.stringify(info.json).includes('proj-a'), '工作区名字不得出现在 /info')
+  } finally {
+    await host.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('autoAccept：配对即接受，无需本机点「接受」，传输全程跑通', async () => {
+  const root = tmpDir('auto')
+  const bundleDir = path.join(root, 'bundle')
+  const destDir = path.join(root, 'dest')
+  const dshHome = path.join(root, 'home')
+  fs.mkdirSync(dshHome, { recursive: true })
+  makeBundle(bundleDir)
+  const host = await startHost({ bundleDir, bind: '127.0.0.1', port: 0, autoAccept: true })
+  try {
+    // /pair 直接返回 accepted + token，不等 /decide
+    const pair = await requestJson({
+      host: '127.0.0.1', port: host.port, method: 'POST', path: '/pair',
+      json: { code: host.code, client: { alias: '新机器', hostname: 'NEW-PC' } },
+    })
+    assert.equal(pair.json.ok, true)
+    assert.equal(pair.json.status, 'accepted', 'autoAccept 下配对即接受')
+    assert.ok(pair.json.token, '配对响应直接带 token')
+
+    const got = await receiveStream('127.0.0.1', host.port, pair.json.sessionId, pair.json.token, destDir)
+    assert.ok(got.includes('settings.yaml'), 'settings 应收到')
+    assert.ok(fs.existsSync(path.join(destDir, 'settings.yaml')))
+  } finally {
+    await host.close()
+    fs.rmSync(destDir, { recursive: true, force: true })
+    fs.rmSync(dshHome, { recursive: true, force: true })
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('/summary：没配对拿不到；配对后带名字的完整摘要', async () => {
+  const root = tmpDir('summary')
+  const bundleDir = path.join(root, 'bundle')
+  makeBundle(bundleDir, {
+    plugins: [{ name: 'dsh-foo', files: 3, bytes: 456 }],
+    workspaces: [{ name: 'proj-a', sourcePath: 'D:/proj/a', bytes: 123, hasGit: true }],
+    state: { sessions: { total: 2, logFiles: 3 } },
+  })
+  const host = await startHost({ bundleDir, bind: '127.0.0.1', port: 0 })
+  try {
+    const denied = await requestJson({ host: '127.0.0.1', port: host.port, method: 'GET', path: '/summary' })
+    assert.equal(denied.status, 403, '未配对必须 403')
+
+    const pair = await requestJson({
+      host: '127.0.0.1', port: host.port, method: 'POST', path: '/pair',
+      json: { code: host.code, client: { alias: '新机器' } },
+    })
+    // 手动模式：/pair 之后仍是 pending，需本机接受；token 只在接受后经 /wait 发放
+    assert.equal(pair.json.status, 'pending')
+    const summary0 = await requestJson({
+      host: '127.0.0.1', port: host.port, method: 'GET',
+      path: '/summary?sessionId=' + pair.json.sessionId,
+    })
+    assert.equal(summary0.status, 403, '没拿到 token 就没有摘要')
+
+    await requestJson({ host: '127.0.0.1', port: host.port, method: 'POST', path: '/decide', json: { accept: true } })
+    const wait = await requestJson({
+      host: '127.0.0.1', port: host.port, method: 'GET', path: '/wait?sessionId=' + pair.json.sessionId,
+    })
+    const summary = await requestJson({
+      host: '127.0.0.1', port: host.port, method: 'GET',
+      path: '/summary?sessionId=' + pair.json.sessionId + '&token=' + encodeURIComponent(wait.json.token),
+    })
+    assert.equal(summary.json.ok, true)
+    assert.equal(summary.json.summary.workspaces[0].name, 'proj-a', '配对后有名字')
+    assert.equal(summary.json.summary.plugins[0].name, 'dsh-foo')
+    assert.equal(summary.json.summary.sessions, 2)
+  } finally {
+    await host.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('pullBundle 全程：autoAccept 源机 + 一条命令，无 /decide、无人工介入', async () => {
+  const root = tmpDir('oneshot')
+  const bundleDir = path.join(root, 'bundle')
+  const destDir = path.join(root, 'dest')
+  const dshHome = path.join(root, 'home')
+  fs.mkdirSync(dshHome, { recursive: true })
+  makeBundle(bundleDir)
+  const host = await startHost({ bundleDir, bind: '127.0.0.1', port: 0, autoAccept: true })
+  try {
+    const report = await pullBundle({
+      host: '127.0.0.1', port: host.port, code: host.code,
+      destDir, dshHome, onLog: () => {},
+    })
+    assert.equal(report.ok, true, JSON.stringify(report.errors))
+    assert.ok(fs.existsSync(path.join(destDir, 'manifest.json')))
+    assert.ok(fs.existsSync(path.join(dshHome, 'settings.yaml')), 'settings 应落地')
+  } finally {
+    await host.close()
+    fs.rmSync(destDir, { recursive: true, force: true })
+    fs.rmSync(dshHome, { recursive: true, force: true })
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('toDevice：解析 0.18 广播里的内容计数与 autoAccept；旧发送端（无字段）解析为 undefined', () => {
+  const fresh = toDevice({
+    service: 'dsh-sync-lan', proto: 1, port: 38473, alias: '旧机', bundle: { files: 10, bytes: 1000, sessions: 84, plugins: 11, workspaces: 5, encrypted: true },
+    autoAccept: true,
+  }, '192.168.1.9')
+  assert.equal(fresh.bundle.sessions, 84)
+  assert.equal(fresh.bundle.plugins, 11)
+  assert.equal(fresh.bundle.workspaces, 5)
+  assert.equal(fresh.bundle.encrypted, true)
+  assert.equal(fresh.autoAccept, true)
+
+  const legacy = toDevice({ service: 'dsh-sync-lan', proto: 1, port: 38473, alias: '旧机', bundle: { files: 10, bytes: 1000 } }, '192.168.1.9')
+  assert.equal(legacy.bundle.sessions, null, "旧发送端没有计数字段，解析成 null 而不是 0")
+  assert.equal(legacy.bundle.encrypted, false)
+  assert.equal(legacy.autoAccept, false)
 })

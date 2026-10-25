@@ -150,6 +150,15 @@ window.__ModuleLoader__.load({
       migrateNoJob: "还没有迁移任务",
       migrateNext: "接下来",
       migrateLogs: "最近日志",
+      // 一条龙：内容计数 / 自动接受 / 汇总判定
+      willLine: "将迁移：会话 {sessions} · 插件 {plugins} · 工作区 {workspaces} · {bytes}",
+      willEncrypted: "🔒 已加密（落地需要口令）",
+      devicesNextAuto: "已选 {alias}：填配对码 → 点「开始迁移」。之后自动传输与落地，两端都不需要再操作。",
+      migrateWaitAuto: "传输自动进行中，无需在源机操作。",
+      verdictTitle: "迁移结果",
+      verdictOkLine: "迁移完毕：插件正常，dsh 配置正常，可以使用",
+      verdictRestart: "重启 dsh（桌面版从托盘完全退出再打开）后即与旧机一致。",
+      verdictBad: "以下项目未通过，按「接下来」处理后重跑即可（已收到的文件自动跳过）：",
     };
 
     const en = {
@@ -249,6 +258,14 @@ window.__ModuleLoader__.load({
       migrateFailed: "Migration failed",
       migrateNoJob: "No migration job yet",
       migrateLogs: "Recent log",
+      willLine: "Will migrate: {sessions} sessions · {plugins} plugins · {workspaces} workspaces · {bytes}",
+      willEncrypted: "🔒 encrypted (passphrase needed to land)",
+      devicesNextAuto: "Selected {alias}: enter the code → start. Transfer and landing then run hands-free — nothing to click on either machine.",
+      migrateWaitAuto: "Transfer is running automatically; nothing to do on the source machine.",
+      verdictTitle: "Result",
+      verdictOkLine: "Migration complete: plugins OK, dsh config OK, ready to use",
+      verdictRestart: "Restart dsh (quit fully from the tray, then reopen) to finish becoming identical.",
+      verdictBad: "Some items did not pass. Handle them via \"next steps\" and rerun (already-received files are skipped):",
     };
 
     /** 样式复刻官方 PluginCard / fields 的规则，类名加 dsh-sync- 前缀避免冲突。 */
@@ -744,11 +761,24 @@ window.__ModuleLoader__.load({
 
     /** 设备行要显示的三段：地址:端口 · 体积 · 状态。 */
     function deviceMeta(t, d) {
-      return [
+      const parts = [
         d.address + ":" + d.port,
         d.files > 0 ? fill(t("devicesFiles"), { files: fmtCount(d.files), bytes: fmtBytes(d.bytes) }) : t("devicesNoBundle"),
         devStateLabel(t, d.state),
       ].filter((s) => s !== "").join("   ");
+      // 0.18 起广播里带内容计数：选中之前就知道「将迁移什么」——旧发送端没有这些
+      // 字段时是 undefined，这一行就不出现。
+      let will = "";
+      if (d.sessions !== undefined && d.plugins !== undefined) {
+        will = " " + fill(t("willLine"), {
+          sessions: fmtCount(d.sessions),
+          plugins: fmtCount(d.plugins),
+          workspaces: d.workspaces !== undefined ? fmtCount(d.workspaces) : "—",
+          bytes: fmtBytes(d.bytes),
+        });
+        if (d.encrypted) will += " · " + t("willEncrypted");
+      }
+      return parts + will;
     }
 
     /**
@@ -818,7 +848,8 @@ window.__ModuleLoader__.load({
         tail = React.createElement("p", { className: "dsh-sync-hint", role: "status" }, t("devicesStale"));
       } else if (selection.device) {
         tail = React.createElement("p", { className: "dsh-sync-note" },
-          fill(t("devicesNext"), { alias: selection.device.alias }),
+          // 源机开了一条龙（autoAccept）就说清「之后不用再管」；旧发送端仍要点接受。
+          fill(selection.device.autoAccept ? t("devicesNextAuto") : t("devicesNext"), { alias: selection.device.alias }),
           // 自动选中要说明：否则用户会以为自己（或别人）点过这一台。
           selection.auto
             ? React.createElement("span", { className: "dsh-sync-tag" }, t("devicesAutoPicked"))
@@ -856,6 +887,9 @@ window.__ModuleLoader__.load({
         ? React.createElement("p", { className: "dsh-sync-failed", role: "status" }, mig.error)
         : null;
 
+      // 免填化：口令框只在选中的设备报告「bundle 已加密」时出现 —— 不加密的 bundle
+      // 这个框纯属吓人；而加密的 bundle 不填它，落地必然失败。没选中设备时先不显示。
+      const needsPass = Boolean(selected && selected.encrypted);
       const inputs = [
         React.createElement(TextField, {
           key: "code", id: "dsh-sync-code", label: t("migrateCode"), hint: t("migrateCodeHint"),
@@ -869,12 +903,14 @@ window.__ModuleLoader__.load({
           key: "root", id: "dsh-sync-root", label: t("migrateRoot"), hint: t("migrateRootHint"),
           value: form.workspaceRoot, disabled: locked, onEdit: (value) => { props.onEdit("workspaceRoot", value); },
         }),
-        React.createElement(TextField, {
-          key: "pass", id: "dsh-sync-pass", label: t("migratePass"), hint: t("migratePassHint"),
-          inputType: "password",
-          value: form.passphrase || "", disabled: locked, onEdit: (value) => { props.onEdit("passphrase", value); },
-        }),
-      ];
+        needsPass
+          ? React.createElement(TextField, {
+            key: "pass", id: "dsh-sync-pass", label: t("migratePass"), hint: t("migratePassHint"),
+            inputType: "password",
+            value: form.passphrase || "", disabled: locked, onEdit: (value) => { props.onEdit("passphrase", value); },
+          })
+          : null,
+      ].filter(Boolean);
 
       let gate = null;
       if (selected === null) gate = t("migrateNeedSelect");
@@ -894,20 +930,35 @@ window.__ModuleLoader__.load({
         tail = React.createElement("p", { className: "dsh-sync-hint" }, t("migrateNoJob"));
       } else if (running) {
         const percent = job.progress && typeof job.progress.percent === "number" ? job.progress.percent : 0;
+        // autoAccept 的源机不用再叮嘱「去源机页面点接受」——那条提示会让人白跑一趟。
+        const waitText = selected && selected.autoAccept ? t("migrateWaitAuto") : t("migrateWait");
         tail = React.createElement("div", null,
           React.createElement("div", { className: "dsh-sync-bar" },
             React.createElement("div", { className: "dsh-sync-barFill", style: { width: Math.max(2, Math.round(percent)) + "%" } })),
           React.createElement("p", { className: "dsh-sync-hint", role: "status" }, progressText(t, job)),
-          React.createElement("p", { className: "dsh-sync-note" }, t("migrateWait")));
+          React.createElement("p", { className: "dsh-sync-note" }, waitText));
       } else {
         const ok = Boolean(job.result && job.result.ok);
         const rows = job.result && Array.isArray(job.result.rows) ? job.result.rows : [];
         // 「下一步」来自 apply 报告（最要紧的一条是重启 dsh）。卡片上不说，
         // 用户就会以为「迁移完成」等于「现在能用」，然后在旧配置下继续干活。
         const steps = job.result && Array.isArray(job.result.nextSteps) ? job.result.nextSteps : [];
+        const verdict = job.result && job.result.verdict && Array.isArray(job.result.verdict.items)
+          ? job.result.verdict : null;
         tail = React.createElement("div", null,
           React.createElement("p", { className: ok ? "dsh-sync-msg" : "dsh-sync-failed", role: "status" },
             ok ? t("migrateDone") : t("migrateFailed")),
+          verdict !== null
+            ? React.createElement("div", { className: "dsh-sync-verdict" },
+              React.createElement("p", {
+                className: verdict.ok ? "dsh-sync-msg" : "dsh-sync-failed", style: { fontWeight: 600 },
+              }, verdict.ok ? t("verdictOkLine") : t("verdictBad")),
+              verdict.ok
+                ? React.createElement("p", { className: "dsh-sync-note" }, t("verdictRestart"))
+                : verdict.items.filter((it) => !it.ok).map((it, i) =>
+                  React.createElement("p", { key: String(i), className: "dsh-sync-failed" },
+                    "· " + it.label + (it.note ? "：" + it.note : ""))))
+            : null,
           rows.map((row, i) => React.createElement(KvRow, {
             key: String(i), label: Array.isArray(row) ? String(row[0]) : "",
           }, Array.isArray(row) ? String(row[1]) : "")),
@@ -988,8 +1039,18 @@ window.__ModuleLoader__.load({
         postMigrate({ action: "status" }).then((body) => {
           if (!alive) return;
           setMig((s) => ({ ...s, defaults: body.defaults || s.defaults, job: body.job || s.job }));
-          const dir = body.defaults && body.defaults.destDir ? body.defaults.destDir : "";
-          if (dir !== "") setMigForm((f) => (f.destDir === "" ? { ...f, destDir: dir } : f));
+          const defs = body.defaults || {};
+          const dir = defs.destDir ? defs.destDir : "";
+          const root = defs.workspaceRoot ? defs.workspaceRoot : "";
+          if (dir !== "" || root !== "") {
+            // 两个目录都预填默认值（配置里填过 workspaceRoot 就用它）——
+            // 免填的目标是「多数人只填一个配对码」。
+            setMigForm((f) => ({
+              ...f,
+              destDir: f.destDir === "" ? dir : f.destDir,
+              workspaceRoot: f.workspaceRoot === "" ? root : f.workspaceRoot,
+            }));
+          }
         }, () => {});
         return () => { alive = false; };
       }, [open]);

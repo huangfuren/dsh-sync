@@ -52,6 +52,12 @@ dshsync_export(profile="*", includeWorkspaces=true, workspaces=["*"])   # all of
 
 Omit `workspaces` and every candidate that exists on the source is selected; `includeGit=false` trades `.git` for size. The output is `dsh-sync-bundle/` — for its layout see the collapsed block "What is in the bundle". The source is **never written to**.
 
+**One shot (recommended)**: add `autoHost=true` to the real run — once the bundle is written, the LAN sender starts on the spot (auto-accept mode), and the pairing code plus progress-page URL come back in the same tool output. No separate `dshsync_lan_host` call, no accept click; the old machine needs nobody watching after this:
+
+```
+dshsync_export(profile="*", includeWorkspaces=true, autoHost=true)
+```
+
 ### 2. Carry it over
 
 **A. Straight over the LAN (recommended)** — no USB drive, no cloud drive, one command each side.
@@ -63,11 +69,11 @@ dshsync_lan_host()                     # bundleDir defaults to the configured ou
 dshsync_lan_host(bundleDir="D:/other") # or name it explicitly
 ```
 
-It prints a 6-digit pairing code and a live progress page (`http://<source-ip>:38473/`), then **returns immediately** — the service keeps running in the background, so the conversation is not blocked for minutes.
+It prints a 6-digit pairing code and a live progress page (`http://<source-ip>:38473/`), then **returns immediately** — the service keeps running in the background, so the conversation is not blocked for minutes. By default the transfer waits for you to click **accept** on the source page; pass `autoAccept=true` to let a correct pairing code start it directly.
 
 On the new machine, either:
 
-- **Click it in the card** (recommended): Settings → Built-in plugins → dsh-sync migration → Devices on this network (**opening the card already broadcast once**; press Scan only if that found nothing) → click one → Start the migration (pairing code, receive-into, project root) → press Start. Progress, the result and the **next steps after landing** (the important one being: restart dsh) appear right there.
+- **Click it in the card** (recommended): Settings → Built-in plugins → dsh-sync migration → Devices on this network (**opening the card already broadcast once**; press Scan only if that found nothing) → click one (each row shows **what will migrate: X sessions · Y plugins · Z workspaces · size**; encrypted bundles are marked 🔒) → enter the pairing code (**receive-into and project root are pre-filled from defaults; the passphrase field only appears when the bundle is encrypted**) → press Start. Progress, then the result appear right there — the card ends with a plain verdict: all green reads "Migration complete: plugins OK, dsh config OK, ready to use", followed by the next steps after landing (the important one being: restart dsh).
 - **Say it in the chat**: run `dshsync_lan_discover()` to list the machines serving a bundle, then
   `dshsync_lan_pull(deviceId="1", code="123456", destDir="...", workspaceRoot="E:/code")`.
 
@@ -151,7 +157,7 @@ Sessions are always handled at **file level** — frames are never split apart a
 
 | Tool | Runs on | Description |
 |---|---|---|
-| `dshsync_export` | Source | Export the bundle. The source is **read-only** (copy only, never modifies config) |
+| `dshsync_export` | Source | Export the bundle. The source is **read-only** (copy only, never modifies config). `autoHost=true` starts the LAN sender (auto-accept mode) right after packing and returns the pairing code + page URL in the same output — the one-shot path |
 | `dshsync_apply` | Target | Land it + workspace unpack + path remapping + session rewrite + symlink rebuild. Supports `dryRun`; `merge=true` for a second (or later) migration onto a machine already in use — lists the disagreements first and stops while any is unresolved |
 | `dshsync_verify` | Target | Verify consistency, item by item |
 | `dshsync_lan_host` | Source | Serve the bundle over the LAN; prints the pairing code and progress page. `bundleDir` defaults to the configured output directory. `action="renew"` reissues a code, `action="stop"` shuts it down |

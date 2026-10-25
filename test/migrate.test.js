@@ -11,8 +11,8 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import { resetDevices, setDevices } from '../lib/lan/devices.js'
-import { createJob, finishJob, resetJobs } from '../lib/lan/jobs.js'
-import { MIGRATE_ROUTE, defaultIncomingDir, registerMigrateRoute } from '../lib/migrate.js'
+import { createJob, finishJob, resetJobs, jobSnapshot, verdictOf } from '../lib/lan/jobs.js'
+import { MIGRATE_ROUTE, defaultIncomingDir, migrateDefaults, registerMigrateRoute } from '../lib/migrate.js'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const CLIENT = path.join(ROOT, 'client.js')
@@ -231,4 +231,63 @@ test('progressText：缺哪段就少哪段，不补占位符', async () => {
   assert.ok(!bare.includes('migrateEta'), '没有 ETA 就不显示剩余')
   assert.ok(!bare.includes('undefined'), '缺失字段不许渲染成 undefined')
   assert.ok(!bare.includes('NaN'))
+})
+
+// ── 0.18：迁移结果汇总判定 + 卡片默认值 ─────────────────────────────────────
+
+test('verdictOf：全绿 → ok=true，出「插件正常/配置正常/可以使用」的判定', () => {
+  const verdict = verdictOf({
+    ok: true,
+    apply: { ok: true, depsInstall: { results: [{ profile: 'desktop', ok: true }] } },
+    verify: { checks: [
+      { id: 'I2', status: 'PASS' }, { id: 'I3', status: 'PASS' }, { id: 'I5', status: 'PASS' },
+      { id: 'I7', status: 'PASS' }, { id: 'I9', status: 'PASS' },
+      { id: 'I13', status: 'PASS' },
+      { id: 'I12', status: 'WARN' },   // WARN 不挡「可以使用」
+    ] },
+  })
+  assert.equal(verdict.ok, true)
+  assert.equal(verdict.items.length, 5)
+  const byLabel = Object.fromEntries(verdict.items.map((x) => [x.label, x]))
+  assert.equal(byLabel['会话历史'].ok, true)
+  assert.equal(byLabel['dsh 配置'].ok, true)
+  assert.equal(byLabel['插件'].ok, true)
+  assert.equal(byLabel['工作区'].ok, true)
+  assert.equal(byLabel['依赖'].ok, true)
+  assert.equal(byLabel['依赖'].note, '已自动重装')
+})
+
+test('verdictOf：verify 有 FAIL 或落地失败 → ok=false，且点名失败项', () => {
+  const bad = verdictOf({
+    ok: false,
+    apply: { ok: false, depsInstall: null },
+    verify: { checks: [{ id: 'I2', status: 'FAIL' }, { id: 'I9', status: 'WARN' }] },
+  })
+  assert.equal(bad.ok, false)
+  const badItems = bad.items.filter((x) => !x.ok).map((x) => x.label)
+  assert.deepEqual(badItems, ['会话历史', 'dsh 配置'])
+
+  // 没跑 verify（autoVerify=false）时判定只对跑过的负责：不 FAIL 就算过
+  const noVerify = verdictOf({ ok: true, apply: { ok: true } })
+  assert.equal(noVerify.ok, true)
+})
+
+test('migrateDefaults：destDir 兜底临时目录，workspaceRoot 从配置带出', () => {
+  const defs = migrateDefaults(() => ({ workspaceRoot: 'E:/code' }))
+  assert.equal(defs.destDir, defaultIncomingDir())
+  assert.equal(defs.workspaceRoot, 'E:/code')
+  const empty = migrateDefaults(() => ({}))
+  assert.equal(empty.workspaceRoot, '')
+  assert.equal(empty.destDir, defaultIncomingDir())
+})
+
+test('jobSnapshot：结束时带 verdict，running 时没有', async () => {
+  resetJobs()
+  const job = createJob({ kind: 'pull' })
+  assert.equal(jobSnapshot(job).result, null)
+  finishJob(job, { ok: true, result: { ok: true, apply: { ok: true }, received: { files: 3 } } })
+  const snap = jobSnapshot(job)
+  assert.ok(snap.result.verdict, '结束时 result 应带 verdict')
+  assert.equal(snap.result.verdict.ok, true)
+  resetJobs()
 })

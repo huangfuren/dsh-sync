@@ -1,6 +1,6 @@
 {
   "name": "dsh-sync",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "把整台机器的 dsh 状态迁移到另一台机器:导出可移植 bundle(settings / 凭据(可选) / 插件源码 / profile 清单 / 会话历史 / 工作区记录 / skills 链接),在目标机落地并按路径映射改写会话 cwd 与工作区路径,最后逐条核对一致性。会话改写只换 zstd 首帧,事件区逐字节不动。",
   "type": "module",
   "main": "index.js",

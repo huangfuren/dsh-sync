@@ -102,18 +102,33 @@ When the user asks which machine is the new one, give them verifiable signals, n
 code present, what does \`preview=true\` list, how large is \`$DSH_HOME\`. The bundle records
 \`hostname + user + $DSH_HOME\` only — no hardware fingerprints.
 
-### The three migration tools
-1. \`dshsync_export\` — on the source. \`preview=true\` first (scans, writes nothing). Use \`profile="*"\`.
-2. \`dshsync_apply\` — on the target, after getting the bundle there (locally via the LAN tools, or by any
-   other copy). **Always \`dryRun=true\` first.** Verifies every sha256 and stops before touching anything
-   if the bundle is damaged; backs up whatever it overwrites to \`$DSH_HOME/.dsh-sync-backup-<ts>/\`.
-3. \`dshsync_verify\` — proves the result, one invariant at a time: bundle integrity, session count,
-   folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
-   had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
-   presence, workspace directories actually existing on the target, profile \`link:\` resolvability and
-   \`node_modules\` state, state-part coverage, **host runtime agreement**, and **packaged project
-   directories having landed** (pass \`workspaceRoot\` to check that last one).
-   Treat a FAIL as "dsh will not see that part of the state".
+### The migration tools, and the hands-free flow (default path)
+When the user says "I want to migrate dsh to my new machine", run the WHOLE source-side flow yourself with
+as few turns as possible — the user should only have to confirm the checklist once:
+1. \`dshsync_export(preview=true)\` on the source (\`profile="*"\`) — show the checklist and ask to confirm.
+2. After confirmation: \`dshsync_export(autoHost=true, includeWorkspaces=true)\` — packs AND starts the LAN
+   sender in auto-accept mode in the same call. The result carries the 6-digit pairing code and the
+   progress-page URL; relay BOTH to the user, plus the one instruction for the new machine: install
+   dsh-sync there, open 设置 → 内置插件 → dsh-sync 迁移, pick this machine, enter the code, click 开始迁移.
+3. From there everything is hands-free: transfer, landing, dependency reinstall and verification run
+   automatically, and the new machine's card ends with a plain verdict ("迁移完毕：插件正常，dsh 配置
+   正常，可以使用" — restart dsh to finish). Do not ask the user to click anything on the source page,
+   do not ask them to run more commands — if the code expires before the target pairs, regenerate with
+   \`dshsync_lan_host(action="renew")\` yourself and hand over the new code.
+
+Manual paths still exist for special cases:
+- \`dshsync_lan_host\` — serve an existing bundle manually (manual accept on the page by default;
+  \`autoAccept=true\` opts into hands-free). \`action="renew"\` / \`action="stop"\`.
+- \`dshsync_apply\` — land a bundle that arrived by any other route. **Always \`dryRun=true\` first.**
+  Verifies every sha256 and stops before touching anything if the bundle is damaged; backs up whatever
+  it overwrites to \`$DSH_HOME/.dsh-sync-backup-<ts>/\`.
+- \`dshsync_verify\` — proves the result, one invariant at a time: bundle integrity, session count,
+  folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
+  had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
+  presence, workspace directories actually existing on the target, profile \`link:\` resolvability and
+  \`node_modules\` state, state-part coverage, **host runtime agreement**, and **packaged project
+  directories having landed** (pass \`workspaceRoot\` to check that last one).
+  Treat a FAIL as "dsh will not see that part of the state".
 
 ### Migrating a second time (onto a machine that is already in use)
 The default landing is a plain overwrite. That is right for a fresh target and wrong for a used one:
