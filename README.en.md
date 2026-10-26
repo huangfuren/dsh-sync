@@ -8,13 +8,8 @@ it is **the same as the old one**: same settings, same plugins, same conversatio
 - **Three layers travel together**: declaration (settings / credentials / plugin sources) → state (sessions / workspace records / skills / attachments) → optionally the project directories themselves.
 - **Sessions cannot be corrupted**: only the `cwd` in the first frame of each zstd multi-frame log is rewritten; every event frame is left byte for byte.
 - **It checks as it lands**: 15 checks report PASS / FAIL / WARN individually — never "should be fine".
-- **It can migrate twice**: `merge=true` lists the disagreements first and stops before writing anything.
+- **It can migrate twice**: from the second time on it lists the disagreements first and stops before writing anything.
 - **It can be undone**: `dshsync_undo` rolls back one import from the landing ledger, skipping files changed since.
-
-Two ways to move it: carry the bundle by hand (export → copy → land → verify), or go **straight over the LAN** (pair, then one command pulls, lands and verifies).
-
-> **Direction**: the machine that runs `dshsync_export` is the **source (old)**; the one that runs
-> `dshsync_apply` / `dshsync_lan_pull` is the **target (new)**. Which tool you run decides it — nothing is guessed.
 
 ## Install
 
@@ -25,76 +20,126 @@ dsh plugin --profile web add github:huangfuren/dsh-sync
 Use `desktop` instead of `web` on the desktop app. **Install on both machines** — the sender and the landing side live in
 the same package — and **restart dsh** (9 tools and 3 same-origin routes register at startup). Also on the market as `dsh-sync`.
 
-Requires node ≥ 22.19 (per `engines`); session rewriting needs the built-in zstd (22.15+ or 24). LAN transfer needs both machines on the same subnet.
+Requires node ≥ 22.19 (per `engines`); session rewriting needs the built-in zstd (22.15+ or 24). Both machines must be on the same subnet.
 
-## Quick start
+## Migration steps
 
-Three steps: export on the old machine → carry it over → land on the new one.
+**Both machines run the same plugin, but they do different jobs**:
 
-### 1. Export (old machine)
+| | Old machine (source) | New machine (target) |
+|---|---|---|
+| You say | "migrate this machine's dsh to another one" | "pull the old machine's bundle over" |
+| It does | packages and starts the sender, **touching nothing on this machine** | receives, writes, self-checks |
+| Configuration needed | **none** | **none** |
 
-```
-dshsync_export(profile="*", includeWorkspaces=true, credentialPassphrase="<passphrase>", preview=true)
-```
-
-`preview=true` only scans and writes nothing; drop it to run for real. Pick workspaces by name
-(`workspaces=["dsh-chat"]`); omit it to take all. On the real run add `autoHost=true` — the bundle is followed by a
-LAN sender started **in place**, with the pairing code and progress URL in the same output.
-
-### 2. Carry it over
-
-**A. Over the LAN (recommended)** — the sender is already up (`autoHost`, or `dshsync_lan_host()` on its own). On the new machine:
-
-- in the card: Settings → Built-in plugins → **dsh-sync migrate** → scan → pick a machine → enter the code → start;
-- or in the conversation: `dshsync_lan_discover()`, then
-  `dshsync_lan_pull(deviceId="1", code="123456", destDir="...")`.
-
-Each file is checked by sha256 → `apply` runs automatically (including dependency reinstall) → `verify` runs automatically.
-**Interrupted? Run the same command again** — files already received with a matching hash are skipped.
-
-**B. By hand** — copy the directory (USB drive, shared folder). The bundle ships `apply.ps1` / `apply.sh`, so a machine
-without the plugin can still land the declaration and state layers — but it will **not** unpack workspace code or rewrite sessions.
-
-### 3. Land (new machine)
+The old machine **needs no configuration at all**: install the plugin, restart dsh, then say one sentence in the conversation.
 
 ```
-dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
-              workspaceRoot="E:/code",     # your project root on the new machine
-              dryRun=true)                 # dry run first
+old machine   ① one sentence: package + start the sender
+                  ↓ same LAN
+new machine   ② one sentence: pull with the pairing code, lands and verifies itself
+                  ↓
+              ③ quit dsh completely and reopen   →   ④ verify the result
 ```
 
-When the bundle carries workspace code, **one `workspaceRoot` is enough**: session cwds, workspace paths and skills
-symlinks all move under it. Moving `.dsh` alone? Pass `mappings=[{"from":"D:/deepseek","to":"E:/code"}]`.
+### ① Old machine: one sentence
 
-**After landing**: quit dsh completely (tray on desktop) and reopen so the host rebuilds dependencies from the new
-`package.json`; if the plugin list is empty, use "reinstall / repair" once and restart; **do not touch settings in the UI yet** —
-the host may flush what it holds in memory over the files just landed.
+> Migrate this machine's dsh to another machine: take the project code too, put the bundle in `D:/sync`,
+> use `abc123` as the passphrase, and leave it open for the new machine to pull.
 
-### Verify
+That sentence actually decides four things — **leave one out and you get the default**:
+
+| Better to say | Argument | If you don't |
+|---|---|---|
+| take the project code too | `includeWorkspaces=true` | **only settings and sessions travel; sessions open as empty folders** |
+| put the bundle in `D:/sync` | `outDir` | it lands in the system temp dir (`%TEMP%\dsh-sync-bundle`), which may get cleared |
+| leave it open for the new machine | `autoHost=true` | it only packages; no sender, so the new machine cannot connect until you ask again |
+| use `abc123` as the passphrase | `credentialPassphrase` | **plaintext keys are stripped and credentials are left out**, so the new machine re-enters API keys |
+
+Without a passphrase, plaintext key lines in `settings.yaml` are removed with one warning each — intentional, not lost data.
+
+dsh first reports what it would do (plugins, session count, workspace candidates with sizes) and asks whether to continue —
+that step is a preview and **writes nothing**. Once confirmed it packages, then prints a **6-digit pairing code** and a progress URL.
+
+The resulting `D:/sync` looks like this:
 
 ```
-dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
+manifest.json        inventory, checked item by item before landing
+state/               sessions / workspace records / skills / attachments
+plugins/             sources of your link: plugins
+apply.ps1 一键恢复.bat   scripts that land it even without the plugin
 ```
 
-15 checks, one verdict each. `FAIL` means **dsh cannot see this state** — not "might be a bit off".
+### ② New machine: one sentence
+
+Install the plugin, restart dsh, then:
+
+> Pull the old machine's bundle over the LAN — the pairing code is `123456`, put the project code in `E:/code`.
+
+Prefer clicking? **Settings → Built-in plugins → dsh-sync 迁移** → "scan" → pick the old machine → enter the 6-digit
+code → "start migration". Same thing.
+
+It verifies every file by sha256 → lands → verifies, all in one go. **Interrupted? Just say "continue"** — files already
+received with a matching hash are skipped.
+
+> **`E:/code` must be where you really keep projects on the new machine** — session paths are rewritten under it, and
+> the wrong location means sessions cannot open their files. Omit it and it stops before writing rather than guessing.
+>
+> If the two machines are not on the same subnet: copy the whole `D:/sync` directory to the new machine and say
+> "land this directory into `E:/code`" — everything else is identical.
+
+### ③ New machine: quit dsh completely, then reopen
+
+On desktop, **quit from the tray icon** (closing the window only hides it) and make sure the process is gone before
+reopening — only then does the host rebuild dependencies from the new configuration and register plugins and tools.
+
+After it reopens, check three things:
+
+1. **Plugin list**: are your plugins there? If empty, click "reinstall / repair" once in the plugin manager and restart.
+2. **Session list**: they open, and the files inside really exist (not an empty folder).
+3. **Do not change any setting yet** — the host may flush the config it holds in memory over what was just landed.
+
+### ④ Verify
+
+> Verify this migration.
+
+15 checks, each `PASS` / `FAIL` / `WARN`. `FAIL` means **dsh cannot see this state** — not "might be a bit off". A
+`WARN` on `I9 profile 依赖` means dependencies are not installed yet; a restart usually settles it.
+
+Do not delete `D:/sync` (old machine) or the received bundle (new machine) before verification passes — both verify and
+undo still read it.
+
+### When something goes wrong
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| The new machine says the bundle came from itself | the machines are swapped, or you ran it twice on one | say it on the other machine. Add `allowSameMachine=true` only for an in-place restore after reinstall |
+| Landing says the workspace directory exists and is not empty | a previous landing stopped halfway | confirm nothing there is worth keeping, then say "overwrite the existing directory" (`overwriteWorkspaces=true`) |
+| Sessions are listed but open empty | project code was not packaged | re-package on the old machine with `includeWorkspaces`, or accept it and clone the code |
+| Decryption fails | wrong passphrase, or the bundle was modified | the passphrase cannot be guessed — re-package, and write it down this time |
+| Plugin list is empty | dependencies were not rebuilt | plugin manager "reinstall / repair" → restart |
+| You want this landing undone | — | say "undo this migration" — it previews first, and files used after the landing are skipped and listed, never overwritten with the older snapshot |
+| No card in the UI at all | the plugin is not installed or dsh never restarted | `dsh plugin list` first, then quit dsh fully and reopen |
 
 ## Migrating a second time
 
-Once the target has been in use, the plugins it installed, the workspaces it registered and the settings it changed are
-**not in the source snapshot** — a plain overwrite destroys them. So from the second migration on, add `merge=true`: it
-diffs the bundle against the machine as it is now and **stops before writing while any item is undecided**.
+Once the new machine has been in use, the plugins it installed, the workspaces it added and the settings it changed are
+**not in the old snapshot** — a plain overwrite destroys them. So from the second time on, say "don't overwrite what I
+added on this machine": it **compares first and stops**, listing every disagreement.
 
-Four kinds of disagreement, each resolved through `resolutions`:
+Then answer against that list, for example:
+
+> Keep this machine's `dsh-outline` plugin, use the old machine's settings, and only add the sessions I'm missing.
 
 | Kind | Values |
 |---|---|
-| `plugins` | `keep-target` (keep what this machine installed) / `take-source` |
-| `workspaces` | `keep-target` / `take-source` |
-| `settings` | `target` / `source` |
-| `sessions` | `skip` / `append-missing` (only the logs this machine lacks) / `prefer-source` / `prefer-target` |
+| Plugins | keep this machine's (`keep-target`) / take the old one's (`take-source`) |
+| Workspaces | keep this machine's / take the old one's |
+| Settings | this machine's (`target`) / the old one's (`source`) |
+| Sessions | leave alone (`skip`) / only add missing ones (`append-missing`) / take the old / take this one's |
 
-**Undecided items have no default** — better one extra look than a silent guess. For a first migration the target is
-empty, so skip merge and just overwrite.
+**Anything you don't mention is not decided for you** — better one extra look than a silent guess. On a first migration
+the target is empty, so this sentence is unnecessary.
 
 ## Tools
 
@@ -110,10 +155,15 @@ empty, so skip merge and just overwrite.
 | `dshsync_lan_status` | both | Progress, rate and the final result |
 | `dshsync_remap` | either | For when directories moved *after* a migration: remaps five landing points in place, copies nothing |
 
+**What travels**: `settings.yaml`, credentials (see below), each profile's plugin declarations and the sources of your
+`link:` plugins, every past session (paths rewritten only), workspace records, `skills`, attachments, and optionally the
+project code. **What does not**: `node_modules`, `dsh-runtimes`, `cache`, `logs` — the target regenerates those on
+restart. That is why a bundle is usually a hundred-odd MB and only reaches GBs with project code.
+
 ## Configuration
 
-**Settings → Built-in plugins → dsh-sync migrate.** Four fields are editable there: `profile` (`*` = all), `outDir`,
-`includePlugins`, `includeState`. The rest are per-call arguments:
+**It runs without any configuration.** To change the defaults go to **Settings → Built-in plugins → dsh-sync migrate**;
+four fields are editable: `profile` (`*` = all), `outDir`, `includePlugins`, `includeState`. Everything else is per-call:
 
 | Argument | Default | Meaning |
 |---|---|---|
@@ -124,24 +174,23 @@ empty, so skip merge and just overwrite.
 | `workspaceRoot` | empty | Project root on the target machine |
 | `dshHome` | `$DSH_HOME` / `~/.dsh` | Harness home |
 
-The first two are **deliberately not in the form**: one would put plaintext keys into the bundle with a single click, the
-other would write the passphrase in clear text into `settings.yaml`.
+The first two are **deliberately not in the form**: one would put plaintext credentials into the bundle with a single
+click, the other would write the passphrase in clear text into `settings.yaml`.
 
-**Key policy**: prefer `credentialPassphrase` (a wrong passphrase or a modified file fails to decrypt); by default
-credentials are left out and plaintext key lines are stripped with a warning; plaintext carrying is only for a trusted
-channel, and delete the bundle afterwards.
+**Key policy**: prefer a passphrase (a wrong passphrase or a modified file fails to decrypt); by default credentials are
+left out and plaintext key lines are stripped with a warning; plaintext carrying is only for a trusted channel, and delete
+the bundle afterwards.
 
 ## Limitations
 
 - **`node_modules` does not travel**: the target rebuilds dependencies (desktop: quit and reopen; web: `pnpm install` or `dsh plugin add`).
 - **A recent node on the target**: the package requires ≥ 22.19, and session rewriting needs the built-in zstd (22.15+ / 24). Without it sessions are not migrated and the report says so — never a silent skip.
 - **Workspace code is not packaged by default**: without `includeWorkspaces` sessions list but do not open; with it the
-  size goes from hundreds of MB to GBs. An existing non-empty target directory is **refused** unless `overwriteWorkspaces=true`.
+  size goes from hundreds of MB to GBs. An existing non-empty target directory is **refused** unless you allow overwriting.
 - **External symlinks need a matching path**: links under `skills/` pointing outside `$DSH_HOME` are reported as WARN (I6b)
   when the target lacks that directory — the target is never silently changed.
 - **Across host `major.minor`** the host may deny plugins at startup; grant the exact-version waiver per plugin.
-- **Transfer job state lives in memory**: reloading the plugin or restarting dsh loses the `jobId`; rerun
-  `dshsync_lan_pull` and it resumes by hash.
+- **Transfer job state lives in memory**: reloading the plugin or restarting dsh loses the job; rerun the pull and it resumes by hash.
 - **Windows asks about the firewall on first listen** — allow "private networks". The progress page is a browser page, not a DSH panel.
 
 ## Development
