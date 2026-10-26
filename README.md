@@ -133,7 +133,7 @@ dshsync_apply(bundleDir="D:/incoming/dsh-sync-bundle",
 2. 重开后插件列表若是空的,去插件管理器点一次「重新安装 / 修复」再重启;
 3. **先别在界面里改设置** —— 免得宿主把内存里的旧配置写回,盖掉刚落地的文件;
 4. 想确认搬对了:`dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")`,
-   14 项检查逐条给结论,详见文末折叠块「核对项」。
+   15 项检查逐条给结论,详见文末折叠块「核对项」。
 
 `FAIL` 的含义是:**这部分状态 dsh 看不到**。不是"可能有点问题",是确定对不上。
 

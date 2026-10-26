@@ -6,7 +6,7 @@ Move **an entire machine's dsh state** to another machine. After switching, the 
 
 - **Three layers travel together**: declaration (settings / credentials / plugin sources) → state (sessions / workspace records / skills / attachments) → optionally the project directories themselves.
 - **Sessions cannot be corrupted**: only the `cwd` in the first frame of each zstd multi-frame log is rewritten; every event frame is left byte for byte.
-- **It checks as it lands**: 14 checks (I1–I13 plus I6b) report PASS / FAIL / WARN individually — not "should be fine".
+- **It checks as it lands**: 15 checks (I1–I14 plus I6b) report PASS / FAIL / WARN individually — not "should be fine".
 - **It can migrate twice**: `merge=true` lists the disagreements first and stops before writing anything, so it never silently overwrites what the target installed in the meantime.
 
 Two ways to move it: carry the bundle by hand (export → copy → land → verify), or go **straight over the LAN** (pair, then one command pulls it over, lands it and verifies it — no USB drive, no cloud drive).
@@ -112,7 +112,7 @@ Mapping rules: **applied in order, first match wins, and a match must fall on a 
 1. quit dsh completely (on the desktop app: tray, not the window) → reopen; the host reconciles dependencies from the new `package.json`;
 2. if the plugin list comes up empty, use "reinstall/repair" once in the plugin manager, then restart;
 3. **do not touch settings in the UI yet** — the host may flush what it holds in memory over the files that were just landed;
-4. to confirm it really matches: `dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")` — 14 checks, one verdict each (see the collapsed block "The checks").
+4. to confirm it really matches: `dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")` — 15 checks, one verdict each (see the collapsed block "The checks").
 
 `FAIL` means: **dsh cannot see this state.** Not "might be a bit off" — it is definitely out of sync.
 
@@ -395,7 +395,7 @@ dsh plugin --profile desktop list     # the desktop app ships this CLI
 dshsync_verify(bundleDir="D:/incoming/dsh-sync-bundle")
 ```
 
-Fourteen checks (I1–I13, plus I6b as a sub-check of I6), each reported PASS / FAIL / WARN:
+Fifteen checks (I1–I14, plus I6b as a sub-check of I6), each reported PASS / FAIL / WARN:
 
 | ID | Check |
 |---|---|
@@ -413,6 +413,7 @@ Fourteen checks (I1–I13, plus I6b as a sub-check of I6), each reported PASS / 
 | I11 | Host runtime agreement (dsh version / platform / arch / node major); across `major.minor` the host denies plugins at startup |
 | I12 | Packaged workspaces actually landed (checked only when you pass `workspaceRoot`; otherwise WARN, never a guess) |
 | I13 | No post-landing writeback: `settings.yaml` / credentials / `workspace.json` have not been overwritten by the host since landing (checked against the receipt `dshsync_apply` leaves at `$DSH_HOME/.dsh-sync-apply-receipt.json`; a byte-identical rewrite is not drift — only changed content fails) |
+| I14 | No `projcache` identity residue: neither layer of `session_projcache` (the dump and its per-session records) still points at a log path under the source machine's home — residue makes the host report `corrupt session log` and reject the whole `workspaceRegistry` activation |
 
 I11 is a WARN rather than a FAIL: upgrading dsh while migrating is legitimate and must not be blocked. But it guards the nastiest failure of all — the host runs a peer-compatibility ruling at startup, and a version mismatch leaves plugins `stays installed but startup denies it`: every file present, every sha256 correct, all checks green, **and the plugin list empty**. Without this line you would blame dsh-sync for losing your plugins.
 
