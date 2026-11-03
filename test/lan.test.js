@@ -270,7 +270,7 @@ test('safeEqual：等长才比较，等值才为真', () => {
 // defineTool 在**定义时**就校验参数与输出 schema，所以「能注册上」本身是一条有效断言：
 // 参数类型写错、output 里漏了 required、additionalProperties 与字段不匹配，
 // 都会在这里就炸，而不是等到用户在界面上点某个工具时才失败。
-test('八个工具都能被宿主接受并注册（含 LAN 四个与 remap）', async () => {
+test('十个工具都能被宿主接受并注册（含 LAN 四个、remap 与 snapshot）', async () => {
   const registered = []
   const mod = await import('../index.js')
   const ctx = {
@@ -290,6 +290,7 @@ test('八个工具都能被宿主接受并注册（含 LAN 四个与 remap）', 
     'dshsync_lan_pull',
     'dshsync_lan_status',
     'dshsync_remap',
+    'dshsync_snapshot',
     'dshsync_undo',
     'dshsync_verify',
   ])

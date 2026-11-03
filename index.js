@@ -13,6 +13,7 @@ import { defineLanPullTool } from './lib/tools/lan-pull.js'
 import { defineLanStatusTool } from './lib/tools/lan-status.js'
 import { defineLanDiscoverTool } from './lib/tools/lan-discover.js'
 import { defineRemapTool } from './lib/tools/remap.js'
+import { defineSnapshotTool } from './lib/tools/snapshot.js'
 import { defineUndoTool } from './lib/tools/undo.js'
 import { registerMigrateRoute } from './lib/migrate.js'
 import { registerDevicesRoute, registerOverviewRoute } from './lib/status.js'
@@ -126,8 +127,10 @@ Manual paths still exist for special cases:
   folder-name/cwd agreement, container integrity, workspace-path agreement (orphans the source already
   had are only WARN), link rebuild (internal links must resolve, not merely exist), vendored plugin
   presence, workspace directories actually existing on the target, profile \`link:\` resolvability and
-  \`node_modules\` state, state-part coverage, **host runtime agreement**, and **packaged project
-  directories having landed** (pass \`workspaceRoot\` to check that last one).
+  \`node_modules\` state, state-part coverage, **host runtime agreement**, **packaged project
+  directories having landed** (pass \`workspaceRoot\` to check that last one), and **plugin version
+  drift** — an installed copy older than the bundle's or the local dev repo's version means the app
+  is not running what you wrote (I15, WARN only).
   Treat a FAIL as "dsh will not see that part of the state".
 
 ### Migrating a second time (onto a machine that is already in use)
@@ -167,6 +170,20 @@ is the LATEST apply (found via the receipt); older backups are refused while a n
 \`dryRun=true\` first. Deleting a backup directory is how you say "this migration is final": the journal lives there, so undo
 ability ends with it.
 
+### Snapshots: disaster-recovery copies of THIS machine (dshsync_snapshot)
+The bundle machinery doubles as a backup tool. \`dshsync_snapshot\` writes a full bundle into
+\`$DSH_HOME/snapshots/<timestamp>\` with safe defaults — every profile, full state AND the workspace
+project directories (a snapshot that cannot restore "open a session and see the code" failed its
+job; the 2026-10-29 incident was survived on exactly such a bundle). Unchanged files are hardlinked
+against the newest existing snapshot after per-file sha256 verification, so repeated snapshots cost
+only the delta while every one stays self-contained: its \`apply.ps1\` / \`一键恢复.bat\` work on a
+machine where dsh-sync is not installed at all. Old snapshots roll over automatically (\`keep\`,
+default 5; only directories this tool created are ever deleted). Take one BEFORE risky operations —
+updating or uninstalling the desktop app (its uninstaller deletes the whole workspace root; that is
+a documented behavior, not hypothetical), bulk plugin changes — or on a schedule; \`list=true\`
+enumerates what exists. Restoring a snapshot on the SAME machine is an in-place restore: pass
+\`allowSameMachine=true\` to \`dshsync_apply\` (that guard exists precisely for this case).
+
 ### Host version (the failure that hides from every file check)
 A bundle can be perfect and the target still show an empty plugin list: the host runs a peer-compatibility
 ruling at startup, and a version mismatch leaves every plugin \`stays installed but startup denies it\`.
@@ -182,7 +199,7 @@ A gap within the same \`major.minor\` is a soft warning (patch-level lag is norm
 names the waiver you will need. Unknown on either side is "needs manual confirmation", never silently passed.
 
 ### Desktop app vs web host
-Same plugin, same nine tools (dshsync_remap and dshsync_undo included): this is a host-only plugin (no client half, no build step), so the loading
+Same plugin, same ten tools (dshsync_remap, dshsync_undo and dshsync_snapshot included): this is a host-only plugin (no client half, no build step), so the loading
 path is identical in both. Two things genuinely differ, and both have bitten:
 - **The profile you actually run is not necessarily \`web\`.** The desktop app loads \`profiles/desktop\`;
   a plugin installed only into \`profiles/web\` is simply absent from the UI. That is why \`profile\` defaults
@@ -444,7 +461,7 @@ export function apply(ctx, config = {}) {
     if (typeof ctx.tools?.register !== 'function') {
       report(ctx, 'tools.register API changed; dsh-sync tools not registered')
     } else {
-      // 九个工具各自独立 try/catch：某一支注册失败不应连累其它支
+      // 十个工具各自独立 try/catch：某一支注册失败不应连累其它支
       // （导出端能跑、接收端不能跑，总比全都没了强）。
       for (const [label, factory] of [
         ['dshsync_export', defineExportTool],
@@ -456,6 +473,7 @@ export function apply(ctx, config = {}) {
         ['dshsync_lan_status', defineLanStatusTool],
         ['dshsync_lan_discover', defineLanDiscoverTool],
         ['dshsync_remap', defineRemapTool],
+        ['dshsync_snapshot', defineSnapshotTool],
       ]) {
         try {
           ctx.tools.register(factory(getConfig))
