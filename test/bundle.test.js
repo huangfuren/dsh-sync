@@ -496,3 +496,34 @@ test('apply scripts use prepare-settings for settings (path remap support)', asy
     fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true })
   }
 })
+
+test('exportBundle 解析相对 link:（以 profile 目录为基准，apply 落地后的真实形态）', async () => {
+  // 既有 bug 回归：apply 落地把 profile 的 link: 改写成相对形态（link:../../plugins/<name>），
+  // 导出侧此前用进程 CWD 解析它 → vendoring 全军覆没（0.19.0 真机冒烟抓到）。
+  const home = fixture()
+  // 改成相对形态 —— 与 apply 落地后的 profile package.json 一致
+  const relSpec = 'link:../../plugsrc/dsh-foo'
+  for (const name of ['web', 'desktop']) {
+    const p = path.join(home, 'profiles', name, 'package.json')
+    const pkg = JSON.parse(fs.readFileSync(p, 'utf8'))
+    pkg.dependencies['dsh-foo'] = relSpec
+    fs.writeFileSync(p, JSON.stringify(pkg, null, 2))
+  }
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-out-rel-'))
+  try {
+    const { manifest } = await exportBundle({
+      dshHome: home, profiles: ['web'], outDir: out, writeScripts,
+    })
+    assert.ok(fs.existsSync(path.join(out, 'plugins', 'dsh-foo', 'package.json')),
+      '相对 link: 的插件源码必须被 vendoring 进 bundle')
+    assert.ok((manifest.plugins || []).some((p) => p.name === 'dsh-foo'),
+      'manifest.plugins 必须记录 dsh-foo')
+    const warnings = manifest.warnings.filter((w) => /dsh-foo/.test(w.where))
+    assert.equal(warnings.length, 0, '不应再报「源目录不存在」：' + JSON.stringify(warnings))
+    const bundlePkg = JSON.parse(fs.readFileSync(path.join(out, 'profiles', 'web', 'package.json'), 'utf8'))
+    assert.equal(bundlePkg.dependencies['dsh-foo'], 'link:../../plugins/dsh-foo',
+      'bundle 内 profile 声明应改写为 vendored 相对路径')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(out, { recursive: true, force: true })
+  }
+})
