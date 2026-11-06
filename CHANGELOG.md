@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.1 (2026-11-06)
+
+**声明层补齐,无行为改动。**
+
+补 `dsh.compatibility.dshReleases`:`0.1.7-rc.2` / `0.2.0-rc.2` / `0.2.1-rc.5` / `0.2.2-rc.1`。
+依据:0.1.7-rc.2 上七插件实测加载;0.2.2-rc.1 的三条客户端断代 API(`EntryTree.write()`→
+`commit(change)`、`MenuTarget`→`ContextMenuTarget`、`useAnchoredPosition` /
+`Menu.getAnchorRect` 移除)本仓引用数为 0。该字段供插件市场与兼容性阅读器查看,不参与宿主
+加载判定 —— 宿主强校验的仍是 `peerDependencies`。
+
 ## 0.19.0 (2026-11-04)
 
 **防灾恢复:把 bundle 从「迁移工具的副产品」变成「常态化的灾备快照」。** 动机是 2026-10-29 的
